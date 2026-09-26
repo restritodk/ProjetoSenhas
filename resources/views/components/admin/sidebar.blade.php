@@ -53,7 +53,7 @@
                                 href="{{ route($item['route']) }}"
                                 @class([
                                     'flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition duration-200',
-                                    'bg-white/15 text-white ring-1 ring-accent/70' => request()->routeIs($item['route']),
+                                    'bg-accent text-white shadow-sm' => request()->routeIs($item['route']),
                                     'text-white/80 hover:bg-white/10 hover:text-white' => ! request()->routeIs($item['route']),
                                 ])
                                 @if (request()->routeIs($item['route'])) aria-current="page" @endif

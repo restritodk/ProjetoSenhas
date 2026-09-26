@@ -21,7 +21,7 @@ class EnsureOperationalContext
             $request->session()->invalidate();
             $request->session()->regenerateToken();
 
-            return redirect()->route('login');
+            return redirect()->route('login')->with('account_deactivated', true);
         }
 
         $request->attributes->set('active_unit', $unit);

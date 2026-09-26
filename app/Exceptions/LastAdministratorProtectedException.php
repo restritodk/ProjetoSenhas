@@ -15,4 +15,9 @@ class LastAdministratorProtectedException extends RuntimeException
     {
         return new self('Não é possível alterar o perfil do último administrador ativo da clínica.');
     }
+
+    public static function cannotDelete(): self
+    {
+        return new self('Não é possível excluir o último administrador ativo da clínica.');
+    }
 }

@@ -15,6 +15,7 @@
         $formErrorId = 'login-form-error';
         $hasEmailError = $errors->has('email');
         $hasPasswordError = $errors->has('password');
+        $hasAccountNotice = $errors->has('account') || session('account_deactivated');
         $hasFormError = $hasEmailError || $hasPasswordError;
         $inputClass = 'login-field min-h-12 w-full rounded-xl border border-border bg-surface py-2.5 pl-11 pr-3.5 text-sm text-text shadow-sm transition duration-200 placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/25';
     @endphp
@@ -166,7 +167,13 @@
                     </p>
                 </div>
 
-                @if ($hasFormError)
+                @if ($hasAccountNotice)
+                    <div class="mt-6 rounded-xl border border-warning/20 bg-amber-50 px-4 py-3 text-sm text-text" role="status">
+                        <p class="font-semibold text-warning">Acesso temporariamente indisponível</p>
+                        <p class="mt-1 leading-6">Sua conta está desativada e não possui acesso ao sistema neste momento.</p>
+                        <p class="mt-1 leading-6 text-text-muted">Entre em contato com o administrador da clínica para solicitar a reativação.</p>
+                    </div>
+                @elseif ($hasFormError)
                     <div class="mt-6" id="{{ $formErrorId }}">
                         <x-ui.alert type="danger">
                             {{ $errors->first('email') ?: $errors->first('password') }}

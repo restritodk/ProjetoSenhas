@@ -24,7 +24,10 @@ class ClinicManagementTest extends TestCase
             ->get(route('clinic.show'))
             ->assertOk()
             ->assertSee('Clínica Norte')
-            ->assertSee('clinica-norte');
+            ->assertSee('clinica-norte')
+            ->assertSee('Gerencie os dados da clínica e suas unidades de atendimento.')
+            ->assertSee('Informações principais da organização.')
+            ->assertSee('Salvar alterações');
     }
 
     public function test_administrator_does_not_access_another_clinic(): void

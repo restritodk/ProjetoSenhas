@@ -2,6 +2,7 @@
     'title' => null,
     'clinic' => null,
     'unit' => null,
+    'showTitle' => true,
 ])
 
 <header class="sticky top-0 z-20 border-b border-border bg-surface/95 backdrop-blur">
@@ -18,14 +19,19 @@
                 <x-admin.icon name="menu" class="size-5" />
             </button>
             <div class="min-w-0">
-                <h1 class="truncate text-lg font-semibold text-text">{{ $title ?? View::getSection('heading') ?? 'Painel' }}</h1>
-                <p class="truncate text-xs text-text-muted">
-                    {{ $clinic?->name ?? 'Clínica não definida' }}
-                    @if ($unit)
-                        <span aria-hidden="true"> · </span>
-                        <span>{{ $unit->name }}</span>
-                    @endif
-                </p>
+                @if ($showTitle)
+                    <h1 class="truncate text-lg font-semibold text-text">{{ $title ?? View::getSection('heading') ?? 'Painel' }}</h1>
+                    <p class="truncate text-xs text-text-muted">
+                        {{ $clinic?->name ?? 'Clínica não definida' }}
+                        @if ($unit)
+                            <span aria-hidden="true"> · </span>
+                            <span>{{ $unit->name }}</span>
+                        @endif
+                    </p>
+                @else
+                    <p class="truncate text-sm font-semibold text-text">{{ $clinic?->name ?? 'Clínica não definida' }}</p>
+                    <p class="truncate text-xs text-text-muted">{{ $unit?->name ?? 'Todas as unidades' }}</p>
+                @endif
             </div>
         </div>
 

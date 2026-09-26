@@ -36,6 +36,48 @@
         outline-offset: 2px;
     }
 
+    @keyframes hc-fade {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    @keyframes hc-modal-in {
+        from { opacity: 0; transform: translateY(8px) scale(0.97); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes hc-check {
+        from { stroke-dashoffset: 28; }
+        to { stroke-dashoffset: 0; }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+        .hc-fade { animation: hc-fade 180ms ease-out; }
+        .hc-modal-in { animation: hc-modal-in 200ms ease-out; }
+        .hc-check {
+            stroke-dasharray: 28;
+            stroke-dashoffset: 28;
+            animation: hc-check 280ms ease-out 80ms forwards;
+        }
+        .hc-menu-in[data-placement="bottom"] { animation: hc-menu-down 160ms ease-out; }
+        .hc-menu-in[data-placement="top"] { animation: hc-menu-up 160ms ease-out; }
+        .hc-deletion-ring { animation: hc-spin 900ms linear infinite; }
+    }
+
+    @keyframes hc-spin {
+        to { transform: rotate(360deg); }
+    }
+
+    @keyframes hc-menu-down {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes hc-menu-up {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
     @media (prefers-reduced-motion: reduce) {
         *,
         *::before,

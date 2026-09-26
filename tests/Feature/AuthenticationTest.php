@@ -79,9 +79,37 @@ class AuthenticationTest extends TestCase
         ]);
 
         $response->assertRedirect('/login')
-            ->assertSessionHasErrors('email')
+            ->assertSessionHasErrors('account')
+            ->assertSessionHas('account_deactivated')
             ->assertDontSee('Acesso autorizado');
         $this->assertGuest();
+        $this->followRedirects($response)
+            ->assertSee('Acesso temporariamente indisponível')
+            ->assertSee('Sua conta está desativada')
+            ->assertDontSee('User disabled')
+            ->assertDontSee('is_active')
+            ->assertDontSee('inactive');
+    }
+
+    public function test_authenticated_user_loses_access_after_deactivation(): void
+    {
+        $user = User::factory()->create([
+            'password' => Hash::make('secret-password'),
+            'role' => UserRole::ADMINISTRATOR,
+            'active' => true,
+        ]);
+
+        $this->actingAs($user);
+        $user->forceFill(['active' => false])->save();
+
+        $this->get('/dashboard')
+            ->assertRedirect('/login')
+            ->assertSessionHas('account_deactivated');
+        $this->assertGuest();
+
+        $this->get('/login')
+            ->assertSee('Acesso temporariamente indisponível')
+            ->assertSee('Entre em contato com o administrador da clínica');
     }
 
     public function test_supervisor_login_targets_dashboard(): void

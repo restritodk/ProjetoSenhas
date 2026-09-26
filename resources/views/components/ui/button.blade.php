@@ -7,6 +7,7 @@
     $classes = match ($variant) {
         'secondary' => 'border border-border bg-surface text-text hover:bg-background',
         'danger' => 'bg-danger text-white hover:bg-red-700',
+        'success' => 'bg-success text-white hover:bg-green-800',
         'ghost' => 'text-text hover:bg-background',
         default => 'bg-accent text-white hover:bg-blue-700',
     };

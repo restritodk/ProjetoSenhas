@@ -3,13 +3,22 @@
 namespace Tests\Feature;
 
 use App\Actions\CreateUser;
+use App\Actions\DeleteUser;
 use App\Actions\UpdateUser;
 use App\Exceptions\LastAdministratorProtectedException;
 use App\Livewire\UsersManager;
 use App\Models\Clinic;
+use App\Models\Desk;
+use App\Models\Sector;
+use App\Models\Ticket;
+use App\Models\TicketCall;
+use App\Models\TicketTransfer;
 use App\Models\Unit;
 use App\Models\User;
+use App\TicketCallType;
+use App\TicketTransferType;
 use App\UserRole;
+use Illuminate\Contracts\Auth\Access\Gate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -112,9 +121,15 @@ class UserManagementTest extends TestCase
             ->set('password', 'senha-inicial')
             ->set('password_confirmation', 'senha-inicial')
             ->set('active', true)
-            ->call('save')
-            ->assertHasNoErrors()
-            ->assertSee('Usuário criado com sucesso.');
+            ->call('review')
+            ->assertSet('showCreateConfirmation', true)
+            ->assertDontSee('Senha inicial')
+            ->assertDontSee('Confirmar senha')
+            ->call('confirmCreate')
+            ->assertSet('creationOutcome', 'success')
+            ->assertSee('Usuário criado!')
+            ->assertDontSee('senha-inicial')
+            ->assertHasNoErrors();
 
         $created = User::query()->where('email', 'ana.atendente@clinica.test')->first();
 
@@ -156,7 +171,8 @@ class UserManagementTest extends TestCase
             ->set('role', UserRole::SUPERVISOR->value)
             ->set('password', 'senha-inicial')
             ->set('password_confirmation', 'senha-inicial')
-            ->call('save')
+            ->call('review')
+            ->call('confirmCreate')
             ->assertHasNoErrors();
 
         $this->assertDatabaseHas('users', [
@@ -184,7 +200,8 @@ class UserManagementTest extends TestCase
             ->set('password', 'senha-inicial')
             ->set('password_confirmation', 'senha-inicial')
             ->set('unitIds', [$unitA->id])
-            ->call('save')
+            ->call('review')
+            ->call('confirmCreate')
             ->assertHasNoErrors();
 
         $single = User::query()->where('email', 'lia.unidades@clinica.test')->firstOrFail();
@@ -221,7 +238,8 @@ class UserManagementTest extends TestCase
             ->set('password', 'senha-inicial')
             ->set('password_confirmation', 'senha-inicial')
             ->set('unitIds', [$foreignUnit->id])
-            ->call('save')
+            ->call('review')
+            ->assertSet('showCreateConfirmation', false)
             ->assertHasErrors(['unitIds.0']);
 
         $this->assertDatabaseMissing('users', ['email' => 'invasor@clinica.test']);
@@ -478,6 +496,352 @@ class UserManagementTest extends TestCase
             ->assertSee('Marina Busca')
             ->set('search', 'zzzz-inexistente')
             ->assertSee('Nenhum usuário encontrado.');
+    }
+
+    public function test_invalid_user_stays_on_the_form_and_valid_data_waits_for_confirmation(): void
+    {
+        $admin = $this->administrator();
+        $unit = Unit::factory()->for($admin->clinic)->create(['name' => 'Hospital Toledo']);
+
+        $component = Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('startCreate')
+            ->assertSee('Novo usuário')
+            ->set('name', '')
+            ->set('email', 'invalido')
+            ->set('role', 'owner')
+            ->set('password', 'curta')
+            ->set('password_confirmation', 'outra')
+            ->call('review')
+            ->assertHasErrors(['name', 'email', 'role', 'password'])
+            ->assertSet('showCreateConfirmation', false);
+
+        $this->assertDatabaseMissing('users', ['email' => 'invalido']);
+
+        $component
+            ->set('name', 'Eurico Santos')
+            ->set('email', 'eurico.santos@clinica.test')
+            ->set('role', UserRole::ATTENDANT->value)
+            ->set('password', 'senha-inicial')
+            ->set('password_confirmation', 'senha-inicial')
+            ->set('unitIds', [$unit->id])
+            ->call('review')
+            ->assertHasNoErrors()
+            ->assertSet('showCreateConfirmation', true)
+            ->assertSee('Criar novo usuário?')
+            ->assertSee('Eurico Santos')
+            ->assertSee('Hospital Toledo')
+            ->assertDontSee('Senha inicial')
+            ->call('backToUserForm')
+            ->assertSet('showCreateConfirmation', false)
+            ->assertSet('name', 'Eurico Santos')
+            ->assertSet('email', 'eurico.santos@clinica.test')
+            ->assertSet('unitIds', [$unit->id]);
+
+        $this->assertDatabaseMissing('users', ['email' => 'eurico.santos@clinica.test']);
+
+        $component
+            ->call('cancel')
+            ->assertSet('showForm', false)
+            ->assertSet('name', '')
+            ->assertSet('password', '');
+
+        $this->assertDatabaseMissing('users', ['email' => 'eurico.santos@clinica.test']);
+    }
+
+    public function test_confirmed_creation_hashes_the_password_updates_counters_and_can_restart(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $unit = Unit::factory()->for($clinic)->create(['name' => 'Hospital Toledo']);
+        $before = User::query()->where('clinic_id', $clinic->id)->count();
+
+        $component = Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('startCreate')
+            ->set('name', 'Lia Confirmada')
+            ->set('email', 'lia.confirmada@clinica.test')
+            ->set('role', UserRole::ATTENDANT->value)
+            ->set('password', 'senha-inicial')
+            ->set('password_confirmation', 'senha-inicial')
+            ->set('unitIds', [$unit->id])
+            ->call('review')
+            ->call('confirmCreate')
+            ->assertSet('creationOutcome', 'success')
+            ->assertSet('password', '')
+            ->assertSee('Lia Confirmada')
+            ->assertSee('Hospital Toledo')
+            ->call('confirmCreate')
+            ->assertSet('creationOutcome', 'success');
+
+        $this->assertSame(1, User::query()->where('email', 'lia.confirmada@clinica.test')->count());
+        $created = User::query()->where('email', 'lia.confirmada@clinica.test')->firstOrFail();
+        $this->assertTrue(Hash::isHashed($created->getRawOriginal('password')));
+        $this->assertTrue(Hash::check('senha-inicial', $created->password));
+        $this->assertSame($clinic->id, $created->clinic_id);
+        $this->assertSame($before + 1, User::query()->where('clinic_id', $clinic->id)->count());
+
+        $component
+            ->call('dismissCreationOutcome')
+            ->assertSet('showForm', false)
+            ->assertSet('showCreateConfirmation', false)
+            ->assertSet('creationOutcome', '')
+            ->assertSet('creationOutcomeName', '')
+            ->assertSee(($before + 1).' usuários')
+            ->call('startCreate')
+            ->assertSet('showForm', true)
+            ->assertSet('name', '')
+            ->assertSet('password', '')
+            ->set('search', 'lia.confirmada')
+            ->assertSee('Lia Confirmada')
+            ->set('roleFilter', UserRole::SUPERVISOR->value)
+            ->assertDontSee('Lia Confirmada');
+    }
+
+    public function test_multi_select_keeps_several_units_and_drops_an_unchecked_one(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $first = Unit::factory()->for($clinic)->create(['name' => 'Hospital Toledo']);
+        $second = Unit::factory()->for($clinic)->create(['name' => 'Unidade Centro']);
+        $third = Unit::factory()->for($clinic)->create(['name' => 'Unidade Norte']);
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('startCreate')
+            ->assertSee('Buscar unidade')
+            ->assertSee('Selecione as unidades...')
+            ->set('name', 'Equipe Multi')
+            ->set('email', 'equipe.multi@clinica.test')
+            ->set('role', UserRole::ATTENDANT->value)
+            ->set('password', 'senha-inicial')
+            ->set('password_confirmation', 'senha-inicial')
+            ->set('unitIds', [$first->id, $second->id])
+            ->call('review')
+            ->assertSee('Hospital Toledo')
+            ->call('confirmCreate')
+            ->call('dismissCreationOutcome');
+
+        $created = User::query()->where('email', 'equipe.multi@clinica.test')->firstOrFail();
+        $this->assertEqualsCanonicalizing(
+            [$first->id, $second->id],
+            $created->units()->pluck('units.id')->map(fn ($id): int => (int) $id)->all(),
+        );
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('edit', $created->id)
+            ->assertSet('unitIds', fn ($ids): bool => collect($ids)->map(fn ($id): int => (int) $id)->sort()->values()->all() === collect([$first->id, $second->id])->sort()->values()->all())
+            ->set('unitIds', [$second->id, $third->id])
+            ->call('save');
+
+        $this->assertEqualsCanonicalizing(
+            [$second->id, $third->id],
+            $created->fresh()->units()->pluck('units.id')->map(fn ($id): int => (int) $id)->all(),
+        );
+    }
+
+    public function test_actions_menu_puts_edit_inside_and_requires_confirmation_to_change_status(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $attendant = User::factory()->create([
+            'clinic_id' => $clinic->id,
+            'name' => 'Ana Atendente Central',
+            'role' => UserRole::ATTENDANT,
+            'active' => true,
+        ]);
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->assertSee('Mais ações de Ana Atendente Central')
+            ->assertSee('Excluir usuário')
+            ->assertSee('Editar')
+            ->call('confirmDeactivation', $attendant->id)
+            ->assertSee('Desativar usuário?')
+            ->assertSee('Ana Atendente Central');
+
+        $this->assertTrue($attendant->fresh()->active);
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('confirmDeactivation', $attendant->id)
+            ->call('deactivate')
+            ->assertSet('deactivationOutcome', 'success')
+            ->assertSee('Usuário desativado.');
+
+        $this->assertFalse($attendant->fresh()->active);
+
+        auth()->logout();
+        $this->flushSession();
+
+        $this->from('/login')->post('/login', [
+            'email' => $attendant->email,
+            'password' => 'password',
+        ])->assertSessionHasErrors('account');
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('confirmActivation', $attendant->id)
+            ->assertSee('Reativar usuário?');
+
+        $this->assertFalse($attendant->fresh()->active);
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('activate', $attendant->id)
+            ->assertSee('Usuário ativado.');
+
+        $this->assertTrue($attendant->fresh()->active);
+
+        auth()->logout();
+        $this->flushSession();
+
+        $this->post('/login', [
+            'email' => $attendant->email,
+            'password' => 'password',
+        ]);
+        $this->assertAuthenticatedAs($attendant->fresh());
+    }
+
+    public function test_user_deletion_requires_typed_confirmation_and_preserves_history(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $attendant = User::factory()->create([
+            'clinic_id' => $clinic->id,
+            'name' => 'Ana Atendente Central',
+            'email' => 'ana.atendente@clinica.test',
+            'role' => UserRole::ATTENDANT,
+        ]);
+        $unit = Unit::factory()->for($clinic)->create();
+        $sector = Sector::factory()->create(['clinic_id' => $clinic->id, 'unit_id' => $unit->id]);
+        $desk = Desk::factory()->create(['clinic_id' => $clinic->id, 'unit_id' => $unit->id, 'sector_id' => $sector->id]);
+        $destination = Desk::factory()->create(['clinic_id' => $clinic->id, 'unit_id' => $unit->id, 'sector_id' => $sector->id]);
+        $ticket = Ticket::factory()->create([
+            'clinic_id' => $clinic->id,
+            'unit_id' => $unit->id,
+            'sector_id' => $sector->id,
+        ]);
+        $ticket->forceFill(['called_by_user_id' => $attendant->id])->save();
+        $call = new TicketCall;
+        $call->forceFill([
+            'clinic_id' => $clinic->id,
+            'unit_id' => $unit->id,
+            'sector_id' => $sector->id,
+            'ticket_id' => $ticket->id,
+            'desk_id' => $desk->id,
+            'called_by_user_id' => $attendant->id,
+            'call_type' => TicketCallType::INITIAL,
+            'called_at' => now(),
+        ])->save();
+        $transfer = new TicketTransfer;
+        $transfer->forceFill([
+            'clinic_id' => $clinic->id,
+            'unit_id' => $unit->id,
+            'ticket_id' => $ticket->id,
+            'from_desk_id' => $desk->id,
+            'to_desk_id' => $destination->id,
+            'transferred_by_user_id' => $attendant->id,
+            'transfer_type' => TicketTransferType::DESK,
+            'transferred_at' => now(),
+        ])->save();
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('confirmDeletion', $attendant->id)
+            ->assertSee('Excluir usuário?')
+            ->assertSee('1 atendimento')
+            ->assertSee('1 chamada')
+            ->assertSee('1 transferência')
+            ->call('deleteUser')
+            ->assertHasErrors(['deletionConfirmation']);
+
+        $this->assertDatabaseHas('users', ['id' => $attendant->id]);
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('confirmDeletion', $attendant->id)
+            ->call('requestPermanentDeletion')
+            ->set('deletionConfirmation', 'excluir')
+            ->call('deleteUser')
+            ->assertHasErrors(['deletionConfirmation'])
+            ->set('deletionConfirmation', 'EXCLUIR')
+            ->call('deleteUser')
+            ->assertSet('deletionOutcome', 'success')
+            ->assertSee('Usuário excluído!')
+            ->call('deleteUser')
+            ->assertSet('deletionOutcome', 'success');
+
+        $this->assertDatabaseMissing('users', ['id' => $attendant->id]);
+        $this->assertDatabaseHas('tickets', [
+            'id' => $ticket->id,
+            'called_by_user_id' => null,
+            'archived_called_by_name' => 'Ana Atendente Central',
+        ]);
+        $this->assertDatabaseHas('ticket_calls', [
+            'id' => $call->id,
+            'called_by_user_id' => null,
+            'archived_called_by_name' => 'Ana Atendente Central',
+        ]);
+        $this->assertDatabaseHas('ticket_transfers', [
+            'id' => $transfer->id,
+            'transferred_by_user_id' => null,
+            'archived_transferred_by_name' => 'Ana Atendente Central',
+        ]);
+    }
+
+    public function test_failed_user_deletion_rolls_back_without_success(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $attendant = User::factory()->create([
+            'clinic_id' => $clinic->id,
+            'name' => 'Conta reversível',
+            'role' => UserRole::ATTENDANT,
+        ]);
+
+        User::deleting(function (): void {
+            throw new \RuntimeException('forced-failure');
+        });
+
+        try {
+            Livewire::actingAs($admin)
+                ->test(UsersManager::class)
+                ->call('confirmDeletion', $attendant->id)
+                ->call('requestPermanentDeletion')
+                ->set('deletionConfirmation', 'EXCLUIR')
+                ->call('deleteUser')
+                ->assertSet('deletionOutcome', 'error')
+                ->assertSee('Nenhuma alteração parcial foi mantida.')
+                ->assertDontSee('Usuário excluído!');
+        } finally {
+            User::flushEventListeners();
+        }
+
+        $this->assertDatabaseHas('users', ['id' => $attendant->id, 'name' => 'Conta reversível']);
+    }
+
+    public function test_user_cannot_delete_self_last_administrator_or_foreign_account(): void
+    {
+        $clinic = Clinic::factory()->create();
+        $admin = $this->administrator($clinic);
+        $foreign = User::factory()->create(['role' => UserRole::ATTENDANT]);
+        $supervisor = User::factory()->create([
+            'clinic_id' => $clinic->id,
+            'role' => UserRole::SUPERVISOR,
+        ]);
+
+        $this->assertFalse(app(Gate::class)->forUser($supervisor)->allows('delete', $admin));
+
+        Livewire::actingAs($admin)
+            ->test(UsersManager::class)
+            ->call('confirmDeletion', $foreign->id)
+            ->assertNotFound();
+
+        $this->assertDatabaseHas('users', ['id' => $admin->id]);
+        $this->expectException(HttpException::class);
+        app(DeleteUser::class)->handle($admin, $admin);
     }
 
     /**

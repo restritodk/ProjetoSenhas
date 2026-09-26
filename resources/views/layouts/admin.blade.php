@@ -32,13 +32,19 @@
         </aside>
 
         <div class="flex min-h-screen flex-col">
-            <x-admin.topbar
-                :title="$__env->yieldContent('heading') ?: 'Painel'"
-                :clinic="$currentClinic"
-                :unit="$activeUnit"
-            />
+            @unless (View::hasSection('dashboard-chrome'))
+                <x-admin.topbar
+                    :title="$__env->yieldContent('heading') ?: 'Painel'"
+                    :clinic="$currentClinic"
+                    :unit="$activeUnit"
+                    :show-title="! View::hasSection('content-title')"
+                />
+            @endunless
 
-            <main id="conteudo-principal" class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+            <main id="conteudo-principal" @class([
+                'flex-1',
+                'px-4 py-6 sm:px-6 lg:px-8' => ! View::hasSection('dashboard-chrome'),
+            ])>
                 @if (session('status'))
                     <x-ui.alert type="success" class="mb-6">{{ session('status') }}</x-ui.alert>
                 @endif
