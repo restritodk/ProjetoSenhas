@@ -121,6 +121,7 @@ class TvMediaBrowserPlaybackTest extends TestCase
         $this->assertStringContainsString('EFFECT_PLAY_RESOLVED', $html);
         $this->assertStringContainsString('EFFECT_ENDED', $html);
         $this->assertStringContainsString('TTS_START_REQUESTED', $html);
+        $this->assertStringContainsString('playSmartTvSequence', $html);
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('playEffectBuffer', $html);

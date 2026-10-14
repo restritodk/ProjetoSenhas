@@ -50,7 +50,9 @@ class DisplayPanelFeed
 
     /**
      * Minimal public snapshot for sub-second call detection on the TV.
-     * Never includes personal user data, announcements, or audio URLs.
+     * Includes lean announce fields (phrase + relative TTS URL) so the client can
+     * start effect+TTS without waiting for Livewire. Never includes credentials
+     * or personal user data beyond what the panel already displays.
      *
      * @return array<string, mixed>
      */
@@ -73,6 +75,8 @@ class DisplayPanelFeed
             'call_type' => null,
             'called_at' => null,
             'correlation' => 'none',
+            'announcement' => null,
+            'audio_url' => null,
         ];
 
         if (! $panel->isOperationallyAvailable() || $panel->clinic === null || $panel->unit === null) {
@@ -88,6 +92,10 @@ class DisplayPanelFeed
         $status = $call->ticket?->status;
         $statusValue = $status instanceof TicketStatus ? $status->value : null;
 
+        $presentation = TvPresentation::forClinic($panel->clinic, $this->clinicSettings, $this->clinicBranding)->toArray();
+        $speakType = (bool) ($presentation['speak_ticket_type'] ?? true);
+        $speakDesk = (bool) ($presentation['speak_desk'] ?? true);
+
         return [
             'enabled' => true,
             'cursor' => (int) $call->id,
@@ -99,6 +107,8 @@ class DisplayPanelFeed
             'call_type' => $call->call_type->value,
             'called_at' => $call->called_at?->timezone(config('app.timezone'))->format('H:i') ?? '',
             'correlation' => 'tc-'.$call->id,
+            'announcement' => $this->voiceFormatter->announce($call, $speakType, $speakDesk),
+            'audio_url' => $this->tvTts->audioUrlForCall($panel, $call),
         ];
     }
 

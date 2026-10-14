@@ -54,11 +54,15 @@ class TvSmartTvCallEffectTest extends TestCase
             || str_contains($html, '&quot;isSmartTv&quot;:true'),
             'Smart TV flag must be true in the audio UI bootstrap payload'
         );
-        // Smart TV: effect then Google TTS via WebAudio (not speechSynthesis).
+        // Smart TV: single HTMLAudio sequence (effect → Google TTS); WebAudio only as last resort.
+        $this->assertStringContainsString('playSmartTvSequence', $html);
+        $this->assertStringContainsString('playHtmlAudioClip', $html);
+        $this->assertStringContainsString('fetchTtsBlob', $html);
         $this->assertStringContainsString('playGoogleTtsSmartTv', $html);
         $this->assertStringContainsString('playSmartTvEffect', $html);
         $this->assertStringContainsString('playNext', $html);
         $this->assertStringContainsString('Hard guard: Smart TV must not use speech', $html);
+        $this->assertStringContainsString('steals the Tizen media pipeline', $html);
     }
 
     public function test_desktop_panel_does_not_embed_smart_tv_effect_element(): void

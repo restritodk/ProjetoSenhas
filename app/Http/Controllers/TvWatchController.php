@@ -9,7 +9,8 @@ class TvWatchController extends Controller
 {
     /**
      * Lean public snapshot for fast TV call detection.
-     * Does not synthesize TTS or expose personal data.
+     * Includes relative TTS URL + announcement phrase for immediate client enqueue.
+     * Does not synthesize TTS or expose credentials / personal user records.
      */
     public function __invoke(string $publicToken, DisplayPanelFeed $feed): JsonResponse
     {

@@ -72,8 +72,12 @@ class TvRealtimeCallTest extends TestCase
         $this->assertSame(TicketStatus::CALLED->value, $watch['ticket_status']);
         $this->assertSame($ticket->display_code, $watch['display_code']);
         $this->assertStringNotContainsString('called_by', json_encode($watch));
-        $this->assertArrayNotHasKey('audio_url', $watch);
-        $this->assertArrayNotHasKey('announcement', $watch);
+        // Lean announce fields: TV enqueues effect+TTS without waiting for Livewire.
+        $this->assertArrayHasKey('audio_url', $watch);
+        $this->assertArrayHasKey('announcement', $watch);
+        $this->assertNotEmpty($watch['announcement']);
+        $this->assertIsString($watch['audio_url']);
+        $this->assertStringContainsString('/tts/', (string) $watch['audio_url']);
 
         $component->call('refreshFeed')
             ->assertSee($ticket->display_code)
@@ -339,6 +343,8 @@ class TvRealtimeCallTest extends TestCase
             'call_type',
             'called_at',
             'correlation',
+            'announcement',
+            'audio_url',
         ];
 
         $this->assertSame([], array_values(array_diff(array_keys($watch), $allowed)));
@@ -349,9 +355,9 @@ class TvRealtimeCallTest extends TestCase
         $this->assertStringNotContainsString('email', $encoded);
         $this->assertStringNotContainsString('password', $encoded);
         $this->assertStringNotContainsString('called_by', $encoded);
-        $this->assertStringNotContainsString('audio_url', $encoded);
-        $this->assertStringNotContainsString('announcement', $encoded);
         $this->assertStringNotContainsString('public_token', $encoded);
+        $this->assertStringContainsString('audio_url', $encoded);
+        $this->assertStringContainsString('announcement', $encoded);
     }
 
     public function test_watch_client_guards_inflight_and_aborts_slow_requests(): void
@@ -366,8 +372,10 @@ class TvRealtimeCallTest extends TestCase
         $this->assertStringContainsString('controller.abort', $html);
         $this->assertStringContainsString('wire:poll.', $html);
         $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
+        $this->assertStringContainsString('playSmartTvSequence', $html);
         $this->assertStringContainsString('playSmartTvEffect', $html);
         $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
+        $this->assertStringContainsString('source: \'watch\'', $html);
         $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
         $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
         $this->assertStringContainsString('invalidateTicket', $html);

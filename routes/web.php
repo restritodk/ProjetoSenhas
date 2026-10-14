@@ -21,6 +21,7 @@ use App\Http\Controllers\RolePermissionController;
 use App\Http\Controllers\SectorController;
 use App\Http\Controllers\TicketIssueController;
 use App\Http\Controllers\TicketTypeController;
+use App\Http\Controllers\TvDiagIngestController;
 use App\Http\Controllers\TvPanelController;
 use App\Http\Controllers\TvTtsController;
 use App\Http\Controllers\TvWatchController;
@@ -77,6 +78,19 @@ Route::get('/painel/{publicToken}/tts/{ticketCall}', TvTtsController::class)
     ->whereNumber('ticketCall')
     ->middleware('throttle:tv-tts')
     ->name('tv.tts');
+
+Route::post('/painel/{publicToken}/diag', TvDiagIngestController::class)
+    ->where('publicToken', PublicAccessCode::panelRoutePattern())
+    ->middleware('throttle:tv-diag')
+    ->withoutMiddleware([
+        EncryptCookies::class,
+        AddQueuedCookiesToResponse::class,
+        StartSession::class,
+        ShareErrorsFromSession::class,
+        ValidateCsrfToken::class,
+        PreventRequestForgery::class,
+    ])
+    ->name('tv.diag');
 
 Route::get('/totem/{publicToken}', KioskPanelController::class)
     ->where('publicToken', PublicAccessCode::kioskRoutePattern())

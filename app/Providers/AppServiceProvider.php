@@ -70,6 +70,12 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by($request->ip());
         });
 
+        RateLimiter::for('tv-diag', function (Request $request): Limit {
+            $token = (string) $request->route('publicToken');
+
+            return Limit::perMinute(30)->by($request->ip().'|'.$token);
+        });
+
         foreach (PermissionCatalog::keys() as $permissionKey) {
             Gate::define($permissionKey, function (User $user) use ($permissionKey): bool {
                 return $user->hasPermission($permissionKey);

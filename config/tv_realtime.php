@@ -65,4 +65,16 @@ return [
 
     'diag_query' => (string) env('TV_DIAG_QUERY', 'tvdiag'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Optional TV diagnostic ingest (disabled by default)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, the TV HUD may POST non-sensitive timing/events to
+    | /painel/{token}/diag. Rate-limited, short retention in cache only.
+    |
+    */
+
+    'diag_ingest_enabled' => (bool) env('TV_DIAG_INGEST', false),
+
 ];
