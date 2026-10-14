@@ -30,7 +30,7 @@
     $tvDiagEnabled = $tvAudioDebug
         || request()->boolean($diagQuery)
         || request()->query($diagQuery) === '1';
-    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v4-htmlseq'), 0, 10);
+    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v4-diagprobe'), 0, 10);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -47,7 +47,7 @@
 @endphp
 <div
     id="tv-shell-root"
-    data-tv-build-family="samsung-v4-htmlseq"
+    data-tv-build-family="samsung-v4-diagprobe"
     data-tv-build="{{ $tvBuildStamp }}"
     wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
     class="tv-shell relative flex flex-col overflow-hidden"
@@ -68,6 +68,7 @@
         'diagIngestUrl' => (bool) config('tv_realtime.diag_ingest_enabled', false)
             ? '/painel/'.$publicToken.'/diag'
             : null,
+        'sampleTtsUrl' => '/painel/'.$publicToken.'/diag/sample-tts?'.$diagQuery.'=1',
         'serverCursor' => (int) ($currentCall['id'] ?? 0),
         'serverDisplayCode' => (string) ($currentCall['display_code'] ?? ''),
         'serverDeskName' => (string) ($currentCall['desk_name'] ?? ''),
@@ -223,6 +224,27 @@
                     x-cloak
                     @click="resumeMedia()"
                 >▶ Retomar mídia</button>
+                <button
+                    type="button"
+                    class="inline-flex min-h-7 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-1.5 py-0.5 text-[0.6rem] font-medium text-white transition hover:bg-amber-500/30 sm:min-h-8 sm:px-2.5 sm:text-xs"
+                    x-show="diagVisible"
+                    x-cloak
+                    @click="diagProbeEffect()"
+                >♪ Testar efeito</button>
+                <button
+                    type="button"
+                    class="inline-flex min-h-7 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-1.5 py-0.5 text-[0.6rem] font-medium text-white transition hover:bg-amber-500/30 sm:min-h-8 sm:px-2.5 sm:text-xs"
+                    x-show="diagVisible"
+                    x-cloak
+                    @click="diagProbeTts()"
+                >🎤 Testar TTS</button>
+                <button
+                    type="button"
+                    class="inline-flex min-h-7 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-1.5 py-0.5 text-[0.6rem] font-medium text-white transition hover:bg-amber-500/30 sm:min-h-8 sm:px-2.5 sm:text-xs"
+                    x-show="diagVisible"
+                    x-cloak
+                    @click="diagProbeSequence()"
+                >▶♪ Sequência</button>
             </div>
         </div>
     </header>
@@ -862,7 +884,100 @@
                     }
                 }
 
+                this.log('SOUND_UNLOCK_RESULT', {
+                    unlocked: !! panel.effectUnlocked,
+                    path: panel.lastEffectPath || null,
+                    readyState: panel.effectAudio ? panel.effectAudio.readyState : null,
+                    src: panel.effectAudio ? String(panel.effectAudio.getAttribute('src') || '').slice(-48) : null,
+                });
+
                 return true;
+            },
+
+            /**
+             * Diagnostic probes (user-gesture only). Do not create TicketCall rows.
+             * Isolates autoplay unlock vs sequencer vs network TTS.
+             */
+            probeSnapshot(panel, label) {
+                const audio = panel && panel.effectAudio ? panel.effectAudio : null;
+                const snap = {
+                    label: label,
+                    soundEnabled: !!(panel && panel.soundEnabled),
+                    unlocked: !!(panel && panel.effectUnlocked),
+                    phase: panel ? panel.audioPhase : null,
+                    smartTv: !!(panel && (panel.isSmartTv || this.isSmartTvBrowser())),
+                    hasEl: !! audio,
+                    rs: audio ? audio.readyState : null,
+                    paused: audio ? audio.paused : null,
+                    muted: audio ? audio.muted : null,
+                    vol: audio ? audio.volume : null,
+                    ct: audio ? Number(audio.currentTime || 0).toFixed(2) : null,
+                    src: audio ? String(audio.getAttribute('src') || audio.currentSrc || '').slice(-56) : null,
+                    err: panel ? (panel.lastPlayError || panel.lastTtsError || null) : null,
+                };
+                this.log('PROBE_SNAP', snap);
+
+                return snap;
+            },
+
+            probeEffect(token) {
+                const panel = this.ensure(token);
+                this.probeSnapshot(panel, 'effect-before');
+                this.log('PROBE_EFFECT_START', 'legacy-playSmartTvEffect');
+                // Exact path that worked on Samsung in 85aa9e6 (not the v4 sequence wrapper).
+                this.playSmartTvEffect(panel, () => {
+                    this.probeSnapshot(panel, 'effect-after');
+                    this.log('PROBE_EFFECT_DONE', panel.lastEffectPath || panel.lastPlayError || 'ok');
+                });
+            },
+
+            probeTts(token, sampleUrl) {
+                const panel = this.ensure(token);
+                const url = typeof sampleUrl === 'string' && sampleUrl !== ''
+                    ? sampleUrl
+                    : null;
+                if (! url) {
+                    this.warn('PROBE_TTS_SKIP', 'missing-sample-url');
+
+                    return;
+                }
+                this.probeSnapshot(panel, 'tts-before');
+                this.log('PROBE_TTS_START', url.slice(0, 100));
+                let audio;
+                try {
+                    audio = this.ensureSmartTvEffect(panel);
+                } catch (e) {
+                    this.warn('PROBE_TTS_FAIL', 'no-element');
+
+                    return;
+                }
+                // Same HTMLAudio element as the call path — still inside the click gesture.
+                this.playHtmlAudioClip(panel, audio, url, 'tts', (ok, reason) => {
+                    this.probeSnapshot(panel, 'tts-after');
+                    this.log('PROBE_TTS_DONE', { ok: ok, reason: reason || null });
+                    this.restoreEffectSrc(panel);
+                });
+            },
+
+            probeSequence(token, sampleUrl) {
+                const panel = this.ensure(token);
+                const ttsUrl = typeof sampleUrl === 'string' && sampleUrl !== '' ? sampleUrl : null;
+                this.probeSnapshot(panel, 'seq-before');
+                this.log('PROBE_SEQ_START', { effect: panel.effectUrl || DEFAULT_EFFECT_URL, tts: ttsUrl });
+                this.playSmartTvSequence(panel, {
+                    effectUrl: panel.effectUrl || DEFAULT_EFFECT_URL,
+                    ttsUrl: ttsUrl,
+                    isCurrentItem: () => true,
+                }, () => {
+                    this.probeSnapshot(panel, 'seq-after');
+                    this.log('PROBE_SEQ_DONE', {
+                        phase: panel.audioPhase,
+                        effectPath: panel.lastEffectPath,
+                        ttsPath: panel.lastTtsPath,
+                        playErr: panel.lastPlayError,
+                        ttsErr: panel.lastTtsError,
+                    });
+                });
             },
 
             async ensureAudioContext(panel) {
@@ -2109,6 +2224,7 @@
                     return;
                 }
                 state.inFlight = true;
+                const startedAt = Date.now();
                 const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
                 const timer = controller
                     ? setTimeout(() => { try { controller.abort(); } catch (e) {} }, state.timeoutMs)
@@ -2124,12 +2240,28 @@
                         cache: 'no-store',
                         signal: controller ? controller.signal : undefined,
                     });
+                    state.lastHttp = response.status;
+                    state.lastMs = Date.now() - startedAt;
+                    state.lastAt = new Date().toISOString().slice(11, 19);
                     if (! response.ok) {
+                        state.lastError = 'http-' + response.status;
+                        if (window.__humanaTvDiag) {
+                            window.__humanaTvDiag.push('WATCH_HTTP ' + response.status + ' ' + state.lastMs + 'ms');
+                        }
+
                         return;
                     }
                     const data = await response.json();
+                    state.lastError = null;
                     this.apply(token, data);
                 } catch (e) {
+                    state.lastHttp = 0;
+                    state.lastMs = Date.now() - startedAt;
+                    state.lastAt = new Date().toISOString().slice(11, 19);
+                    state.lastError = (e && e.name === 'AbortError') ? 'abort-timeout' : 'fetch-fail';
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('WATCH_ERR ' + state.lastError + ' ' + state.lastMs + 'ms');
+                    }
                     // Abort/offline — Livewire wire:poll remains recovery.
                 } finally {
                     if (timer) {
@@ -2163,7 +2295,16 @@
                 }));
 
                 if (cursor > state.cursor) {
+                    const prev = state.cursor;
                     state.cursor = cursor;
+                    state.lastNewAt = new Date().toISOString().slice(11, 19);
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push(
+                            'WATCH_NEW cursor=' + prev + '→' + cursor
+                            + ' code=' + (data.display_code || '-')
+                            + ' audio=' + (data.audio_url ? 'yes' : 'no')
+                        );
+                    }
 
                     // Enqueue announce immediately — do not wait for Livewire morph (~3s poll).
                     // Dedup by callId prevents double play when refreshFeed also enqueues.
@@ -2185,6 +2326,23 @@
                         detail: { panelToken: token },
                     }));
                 }
+            },
+
+            watchSnapshot(token) {
+                const state = this.panels[token];
+                if (! state) {
+                    return null;
+                }
+
+                return {
+                    cursor: state.cursor,
+                    lastHttp: state.lastHttp != null ? state.lastHttp : null,
+                    lastMs: state.lastMs != null ? state.lastMs : null,
+                    lastAt: state.lastAt || null,
+                    lastError: state.lastError || null,
+                    lastNewAt: state.lastNewAt || null,
+                    intervalMs: state.intervalMs,
+                };
             },
 
             syncCursor(token, cursor) {
@@ -2378,6 +2536,24 @@
                     }
                 }
             },
+            diagProbeEffect() {
+                if (! window.__humanaTvCallAudio) {
+                    return;
+                }
+                window.__humanaTvCallAudio.probeEffect(token);
+            },
+            diagProbeTts() {
+                if (! window.__humanaTvCallAudio) {
+                    return;
+                }
+                window.__humanaTvCallAudio.probeTts(token, options.sampleTtsUrl || null);
+            },
+            diagProbeSequence() {
+                if (! window.__humanaTvCallAudio) {
+                    return;
+                }
+                window.__humanaTvCallAudio.probeSequence(token, options.sampleTtsUrl || null);
+            },
             diagText() {
                 const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
                 const panel = window.__humanaTvCallAudio && window.__humanaTvCallAudio.panels
@@ -2388,6 +2564,9 @@
                     ? player.playbackSnapshot()
                     : {};
                 const video = document.querySelector('[data-tv-media-video]');
+                const watch = window.__humanaTvWatch && typeof window.__humanaTvWatch.watchSnapshot === 'function'
+                    ? window.__humanaTvWatch.watchSnapshot(token)
+                    : null;
                 const timings = panel && panel.timings ? panel.timings : null;
                 const tDelta = (key) => {
                     if (! timings || ! timings.CALL_RECEIVED || ! timings[key]) {
@@ -2413,6 +2592,12 @@
                     'lat effect=' + tDelta('EFFECT_PLAYING')
                         + ' tts=' + tDelta('TTS_PLAYING')
                         + ' done=' + tDelta('COMPLETED'),
+                    'watch http=' + (watch && watch.lastHttp != null ? watch.lastHttp : '-')
+                        + ' ms=' + (watch && watch.lastMs != null ? watch.lastMs : '-')
+                        + ' at=' + (watch && watch.lastAt ? watch.lastAt : '-')
+                        + ' err=' + (watch && watch.lastError ? watch.lastError : '-')
+                        + ' newAt=' + (watch && watch.lastNewAt ? watch.lastNewAt : '-')
+                        + ' cur=' + (watch && watch.cursor != null ? watch.cursor : '-'),
                     'feedAt=' + (this.lastFeedAt || '-') + ' callId=' + (this.lastCallIdSeen || '-'),
                     'videoId=' + (snap.videoIdentity || '-')
                         + ' media=' + (snap.id || '-') + '/' + (snap.type || '-')

@@ -22,6 +22,7 @@ use App\Http\Controllers\SectorController;
 use App\Http\Controllers\TicketIssueController;
 use App\Http\Controllers\TicketTypeController;
 use App\Http\Controllers\TvDiagIngestController;
+use App\Http\Controllers\TvDiagSampleTtsController;
 use App\Http\Controllers\TvPanelController;
 use App\Http\Controllers\TvTtsController;
 use App\Http\Controllers\TvWatchController;
@@ -91,6 +92,11 @@ Route::post('/painel/{publicToken}/diag', TvDiagIngestController::class)
         PreventRequestForgery::class,
     ])
     ->name('tv.diag');
+
+Route::get('/painel/{publicToken}/diag/sample-tts', TvDiagSampleTtsController::class)
+    ->where('publicToken', PublicAccessCode::panelRoutePattern())
+    ->middleware('throttle:tv-tts')
+    ->name('tv.diag.sample-tts');
 
 Route::get('/totem/{publicToken}', KioskPanelController::class)
     ->where('publicToken', PublicAccessCode::kioskRoutePattern())

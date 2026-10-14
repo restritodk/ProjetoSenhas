@@ -92,9 +92,10 @@ class DisplayPanelFeed
         $status = $call->ticket?->status;
         $statusValue = $status instanceof TicketStatus ? $status->value : null;
 
-        $presentation = TvPresentation::forClinic($panel->clinic, $this->clinicSettings, $this->clinicBranding)->toArray();
-        $speakType = (bool) ($presentation['speak_ticket_type'] ?? true);
-        $speakDesk = (bool) ($presentation['speak_desk'] ?? true);
+        // Lean path: do NOT call TvPresentation/branding on every ~400ms poll.
+        // Settings are cached; branding resolve was making watch slow enough to miss the UI budget.
+        $speakType = (bool) $this->clinicSettings->get($panel->clinic, 'tv_speak_ticket_type');
+        $speakDesk = (bool) $this->clinicSettings->get($panel->clinic, 'tv_speak_desk');
 
         return [
             'enabled' => true,
