@@ -61,7 +61,10 @@ class TvMediaCallIndependenceTest extends TestCase
         // External pauses (browser audio focus) resume the same element — not call-gated.
         $this->assertStringContainsString('onExternalInterruption', $html);
         $this->assertStringContainsString('continueAfterInterruption', $html);
+        $this->assertStringContainsString('startPauseWatchdog', $html);
+        $this->assertStringContainsString('forceResume', $html);
         $this->assertStringNotContainsString('location.reload', $html);
+        $this->assertStringNotContainsString('window.location.reload', $html);
     }
 
     public function test_call_audio_queue_is_guarded_against_stalls_and_duplicates(): void
@@ -105,6 +108,12 @@ class TvMediaCallIndependenceTest extends TestCase
         $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('unlockSmartTvEffect', $html);
         $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
+        $this->assertStringContainsString('playEffectBuffer', $html);
+        $this->assertStringContainsString('decodeEffectBuffer', $html);
+        // Samsung must not fall back to the old oscillator beep for call dings.
+        $this->assertStringContainsString('never the old oscillator beep', $html);
+        $this->assertStringContainsString('data-tv-diag-hud', $html);
+        $this->assertStringNotContainsString('location.reload', $html);
         // Call audio hosts live on TvDisplay; media island must stay decoupled.
         $this->assertStringContainsString('tv-call-audio-begin', $html);
         $this->assertStringContainsString('data-tv-call-effect', $html);

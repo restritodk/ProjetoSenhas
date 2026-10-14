@@ -83,6 +83,7 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
         $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
+        $this->assertStringContainsString('playEffectBuffer', $html);
         $this->assertStringContainsString('Do not call audio.load() here', $html);
     }
 

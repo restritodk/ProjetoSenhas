@@ -21,8 +21,16 @@
     $logoSurfaceCss = \App\Support\LogoSurface::cssBackground($logoBackground, $logoBackgroundColor);
     $isSmartTv = \App\Support\SmartTvBrowser::matches(request()->userAgent());
     // Relative URL — absolute asset(APP_URL) breaks when the TV opens the panel by IP/host mismatch.
-    $smartTvEffectUrl = '/sond/efeitoSonoroNovo.mp3';
+    // Cache-bust so Samsung does not keep a stale/empty response after deploy.
+    $effectPath = public_path('sond/efeitoSonoroNovo.mp3');
+    $effectVersion = is_file($effectPath) ? (string) filemtime($effectPath) : (string) time();
+    $smartTvEffectUrl = '/sond/efeitoSonoroNovo.mp3?v='.$effectVersion;
     $tvAudioDebug = (bool) config('app.debug') || (bool) config('tv_realtime.player_diagnostics', false);
+    $diagQuery = (string) config('tv_realtime.diag_query', 'tvdiag');
+    $tvDiagEnabled = $tvAudioDebug
+        || request()->boolean($diagQuery)
+        || request()->query($diagQuery) === '1';
+    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v2'), 0, 10);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -40,7 +48,7 @@
 <div
     id="tv-shell-root"
     wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
-    class="tv-shell flex flex-col overflow-hidden"
+    class="tv-shell relative flex flex-col overflow-hidden"
     style="--color-primary: {{ $primaryColor }}; --color-accent: {{ $accentColor }}; --color-primary-dark: {{ $primaryColor }}; --color-primary-light: {{ $primaryColor }};"
     x-data="tvAudioUi(@js([
         'panelToken' => $publicToken,
@@ -50,6 +58,8 @@
         'isSmartTv' => $isSmartTv,
         'effectUrl' => $smartTvEffectUrl,
         'audioDebug' => $tvAudioDebug,
+        'diagEnabled' => $tvDiagEnabled,
+        'buildStamp' => $tvBuildStamp,
         'fastWatchEnabled' => $fastWatchEnabled,
         'fastWatchIntervalMs' => $fastWatchIntervalMs,
         'watchUrl' => '/painel/'.$publicToken.'/watch',
@@ -61,12 +71,13 @@
     x-on:tv-watch-snapshot.window="onWatchSnapshot(\$event.detail)"
     x-on:tv-watch-refresh.window="if (\$event.detail && \$event.detail.panelToken === panelToken) { requestFeedRefresh() }"
 >
-    {{-- Stable audio host (wire:ignore). Audio is visually hidden but NOT display:none —
-        some Smart TV browsers refuse to play media inside display:none. --}}
+    {{-- Stable audio host (wire:ignore). Keep OFF-SCREEN but never clip/opacity:0 —
+        Tizen/Samsung often refuse play() on clipped or fully invisible media elements. --}}
     <div
         wire:ignore
         aria-hidden="true"
-        style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);opacity:0;pointer-events:none;"
+        data-tv-audio-host
+        style="position:fixed;left:-2000px;top:0;width:8px;height:8px;overflow:hidden;opacity:0.01;pointer-events:none;z-index:-1;"
         x-data
         x-init="$nextTick(() => window.__humanaTvCallAudio && window.__humanaTvCallAudio.ensure(@js($publicToken), @js([
             'chimeEnabled' => $chimeEnabled,
@@ -74,7 +85,7 @@
             'chimeVolume' => $chimeVolume,
             'isSmartTv' => $isSmartTv,
             'effectUrl' => $smartTvEffectUrl,
-            'audioDebug' => $tvAudioDebug,
+            'audioDebug' => $tvAudioDebug || $tvDiagEnabled,
         ])))"
     >
         <audio
@@ -200,9 +211,26 @@
                     @click="toggleFullscreen()"
                     x-text="isFullscreen ? '⛶ Sair' : '⛶ Tela cheia'"
                 ></button>
+                <button
+                    type="button"
+                    class="inline-flex min-h-7 items-center justify-center rounded-md border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.6rem] font-medium text-white/90 transition hover:bg-white/20 sm:min-h-8 sm:px-2.5 sm:text-xs"
+                    x-show="diagEnabled || diagVisible"
+                    x-cloak
+                    @click="resumeMedia()"
+                >▶ Retomar mídia</button>
             </div>
         </div>
     </header>
+
+    {{-- Smart TV on-screen diagnostics (no secrets). Enable with ?tvdiag=1 --}}
+    <div
+        x-show="diagVisible"
+        x-cloak
+        data-tv-diag-hud
+        class="pointer-events-none absolute inset-x-0 bottom-0 z-[80] max-h-[42%] overflow-auto bg-black/80 p-2 font-mono text-[10px] leading-snug text-emerald-200 sm:text-[11px]"
+        style="white-space: pre-wrap;"
+        x-text="diagText()"
+    ></div>
 
     @if (! $available)
         <main class="flex min-h-0 flex-1 items-center justify-center bg-background px-4 text-center text-text sm:px-8">
@@ -477,6 +505,9 @@
                         effectUrl: effectUrl,
                         effectAudio: null,
                         effectUnlocked: false,
+                        effectBuffer: null,
+                        effectDecodeFailed: false,
+                        lastEffectPath: null,
                     };
 
                     try {
@@ -486,18 +517,14 @@
                     }
 
                     this.log('smartTv=' + String(this.panels[token].isSmartTv));
-                    if (this.panels[token].isSmartTv) {
-                        this.ensureSmartTvEffect(this.panels[token]);
-                    }
+                    this.ensureSmartTvEffect(this.panels[token]);
                 } else {
                     this.panels[token].clinicChimeEnabled = options.chimeEnabled !== false;
                     this.panels[token].clinicSpeechEnabled = options.speechEnabled !== false;
                     this.panels[token].chimeVolume = Math.max(0, Math.min(100, Number(options.chimeVolume ?? 70)));
                     this.panels[token].isSmartTv = hintSmartTv || this.panels[token].isSmartTv || this.isSmartTvBrowser();
                     this.panels[token].effectUrl = effectUrl;
-                    if (this.panels[token].isSmartTv) {
-                        this.ensureSmartTvEffect(this.panels[token]);
-                    }
+                    this.ensureSmartTvEffect(this.panels[token]);
                 }
 
                 return this.panels[token];
@@ -558,10 +585,99 @@
              * Must play UNMUTED inside the user gesture. Muted unlock does not authorize
              * later unmuted play() on many Samsung/Tizen browsers.
              */
+            async decodeEffectBuffer(panel) {
+                if (panel.effectBuffer || panel.effectDecodeFailed) {
+                    return panel.effectBuffer;
+                }
+
+                const url = panel.effectUrl || DEFAULT_EFFECT_URL;
+                try {
+                    const ctx = await this.ensureAudioContext(panel);
+                    if (! ctx) {
+                        panel.effectDecodeFailed = true;
+
+                        return null;
+                    }
+                    const response = await fetch(url, { credentials: 'same-origin', cache: 'force-cache' });
+                    if (! response.ok) {
+                        throw new Error('effect-http-' + response.status);
+                    }
+                    const raw = await response.arrayBuffer();
+                    panel.effectBuffer = await ctx.decodeAudioData(raw.slice(0));
+                    this.log('EFFECT_DECODED', { bytes: raw.byteLength, duration: panel.effectBuffer.duration });
+
+                    return panel.effectBuffer;
+                } catch (e) {
+                    panel.effectDecodeFailed = true;
+                    this.warn('EFFECT_DECODE_FAILED', e && e.message ? e.message : e);
+
+                    return null;
+                }
+            },
+
+            /**
+             * Play the NEW efeitoSonoroNovo via WebAudio (decoded buffer).
+             * This is NOT the old oscillator beep — same MP3 file, Samsung-safe path.
+             */
+            playEffectBuffer(panel, onEnd) {
+                const safeEnd = () => {
+                    if (typeof onEnd === 'function') {
+                        onEnd();
+                    }
+                };
+
+                const buffer = panel.effectBuffer;
+                if (! buffer) {
+                    safeEnd();
+
+                    return;
+                }
+
+                this.ensureAudioContext(panel).then((ctx) => {
+                    if (! ctx) {
+                        safeEnd();
+
+                        return;
+                    }
+                    try {
+                        const source = ctx.createBufferSource();
+                        const gain = ctx.createGain();
+                        const peak = Math.max(0.05, Math.min(1, (panel.chimeVolume / 100)));
+                        source.buffer = buffer;
+                        gain.gain.value = peak;
+                        source.connect(gain);
+                        gain.connect(ctx.destination);
+                        panel.speaking = true;
+                        panel.lastEffectPath = 'webaudio-buffer';
+                        this.log('EFFECT_PLAY_RESOLVED', 'webaudio-buffer');
+                        let ended = false;
+                        const finish = (reason) => {
+                            if (ended) {
+                                return;
+                            }
+                            ended = true;
+                            panel.speaking = false;
+                            this.log('EFFECT_ENDED', reason || 'buffer');
+                            safeEnd();
+                        };
+                        source.onended = () => finish('buffer-ended');
+                        source.start(0);
+                        const ms = Math.min(MAX_CLIP_MS, Math.max(500, (buffer.duration || 2) * 1000 + 400));
+                        setTimeout(() => finish('buffer-timeout'), ms);
+                    } catch (e) {
+                        this.warn('AUDIO_ERROR', e && e.message ? e.message : e);
+                        safeEnd();
+                    }
+                }).catch(() => safeEnd());
+            },
+
             async unlockSmartTvEffect(panel) {
                 const audio = this.ensureSmartTvEffect(panel);
                 audio.muted = false;
                 audio.volume = 1;
+
+                // Decode the NEW mp3 inside the user gesture (Samsung WebAudio unlock).
+                await this.decodeEffectBuffer(panel);
 
                 try {
                     if (audio.readyState < 2) {
@@ -596,6 +712,7 @@
                         await playPromise;
                     }
                     panel.effectUnlocked = true;
+                    panel.lastEffectPath = 'html-audio';
                     this.log('effect unlocked (unmuted play on gesture)');
                     // Let a short burst confirm sound, then stop — full play happens on TicketCall.
                     await new Promise((resolve) => setTimeout(resolve, 450));
@@ -607,7 +724,7 @@
                         const speech = this.ensureSpeechAudio(panel);
                         speech.muted = false;
                         speech.volume = 1;
-                        if (!speech.getAttribute('src')) {
+                        if (! speech.getAttribute('src')) {
                             speech.src = panel.effectUrl || DEFAULT_EFFECT_URL;
                         }
                         const speechPlay = speech.play();
@@ -620,13 +737,17 @@
                         } catch (err) {}
                     } catch (err) {}
                 } catch (e) {
+                    // HTMLAudio unlock failed — WebAudio buffer of the SAME mp3 may still work.
+                    if (panel.effectBuffer) {
+                        panel.effectUnlocked = true;
+                        panel.lastEffectPath = 'webaudio-buffer';
+                        this.warn('html-audio unlock failed — buffer ready', e && e.message ? e.message : e);
+                        this.playEffectBuffer(panel, () => {});
+
+                        return;
+                    }
                     panel.effectUnlocked = false;
                     this.warn('effect unlock failed', e && e.message ? e.message : e);
-                    // Last resort: Web Audio chime inside the same gesture.
-                    try {
-                        await this.ensureAudioContext(panel);
-                        await this.playChime(panel);
-                    } catch (err) {}
                 }
             },
 
@@ -899,12 +1020,30 @@
                     }
                 };
 
+                const fallbackNewEffect = () => {
+                    // Prefer decoded efeitoSonoroNovo — never the old oscillator beep on Smart TV.
+                    if (panel.effectBuffer) {
+                        this.playEffectBuffer(panel, safeEnd);
+
+                        return;
+                    }
+                    this.decodeEffectBuffer(panel).then((buf) => {
+                        if (buf) {
+                            this.playEffectBuffer(panel, safeEnd);
+
+                            return;
+                        }
+                        this.warn('AUDIO_ERROR', 'effect mp3 unavailable — skipping ding, continue TTS');
+                        safeEnd();
+                    });
+                };
+
                 let audio;
                 try {
                     audio = this.ensureSmartTvEffect(panel);
                 } catch (e) {
                     this.warn('effect error', 'ensure');
-                    this.playChime(panel).finally(safeEnd);
+                    fallbackNewEffect();
                     return;
                 }
 
@@ -937,10 +1076,11 @@
                         return;
                     }
                     if (reason === 'error') {
-                        this.warn('AUDIO_ERROR', 'effect — falling back to chime');
-                        this.playChime(panel).finally(safeEnd);
+                        this.warn('AUDIO_ERROR', 'html-audio failed — trying decoded efeitoSonoroNovo');
+                        fallbackNewEffect();
                         return;
                     }
+                    panel.lastEffectPath = 'html-audio';
                     this.log('EFFECT_ENDED', reason || 'ended');
                     safeEnd();
                 };
@@ -981,10 +1121,17 @@
                         if (playPromise && typeof playPromise.then === 'function') {
                             playPromise.then(() => {
                                 panel.effectUnlocked = true;
+                                panel.lastEffectPath = 'html-audio';
                                 this.log('EFFECT_PLAY_RESOLVED', 'playing');
                                 armClipWatchdog();
                             }).catch((err) => {
                                 this.warn('AUDIO_PLAY_REJECTED', err && err.message ? err.message : err);
+                                // On Smart TV, try decoded NEW mp3 before declaring autoplay blocked.
+                                if (panel.isSmartTv || this.isSmartTvBrowser() || panel.effectBuffer) {
+                                    done('error');
+
+                                    return;
+                                }
                                 this.markAudioBlocked(panel, err);
                                 done('error');
                             });
@@ -1468,6 +1615,7 @@
 
     function tvAudioUi(options = {}) {
         const token = options.panelToken || '';
+        const bootAt = Date.now();
 
         return {
             soundEnabled: false,
@@ -1481,12 +1629,27 @@
             fastDisplayCode: '',
             fastDeskName: '',
             fastTicketTypeName: '',
+            diagEnabled: options.diagEnabled === true,
+            diagVisible: options.diagEnabled === true,
+            buildStamp: options.buildStamp || '',
+            pageLoads: 1,
+            lastFeedAt: null,
+            lastCallIdSeen: null,
             _refreshInFlight: false,
             _watchInFlight: false,
+            _diagTimer: null,
             init() {
                 if (window.__humanaTvCallAudio) {
                     window.__humanaTvCallAudio.ensure(token, options);
                     this.soundEnabled = window.__humanaTvCallAudio.isEnabled(token);
+                }
+                try {
+                    const key = 'tvDiagLoads:' + token;
+                    const prev = Number(sessionStorage.getItem(key) || '0') || 0;
+                    this.pageLoads = prev + 1;
+                    sessionStorage.setItem(key, String(this.pageLoads));
+                } catch (e) {
+                    this.pageLoads = 1;
                 }
                 document.addEventListener('fullscreenchange', () => {
                     this.isFullscreen = Boolean(document.fullscreenElement);
@@ -1496,12 +1659,19 @@
                         this.soundEnabled = false;
                     }
                 });
+                window.addEventListener('pagehide', () => {
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('PAGEHIDE');
+                    }
+                });
                 this.$watch('$wire.currentCall', (value) => {
                     const call = value && typeof value === 'object' ? value : null;
                     this.serverDisplayCode = call && call.display_code ? String(call.display_code) : '';
                     this.serverDeskName = call && call.desk_name ? String(call.desk_name) : '';
                     this.serverTicketTypeName = call && call.ticket_type_name ? String(call.ticket_type_name) : '';
                     const serverCursor = call && call.id != null ? Number(call.id) : 0;
+                    this.lastFeedAt = new Date().toISOString().slice(11, 19);
+                    this.lastCallIdSeen = serverCursor || this.lastCallIdSeen;
                     if (serverCursor >= this.fastCursor) {
                         this.fastCursor = serverCursor;
                         this.fastDisplayCode = '';
@@ -1521,6 +1691,27 @@
                 if (window.__humanaTvWatch) {
                     window.__humanaTvWatch.start(options);
                 }
+                if (this.diagVisible) {
+                    this._diagTimer = setInterval(() => {
+                        // Alpine x-text re-evaluates when reactive deps change; nudge via noop.
+                        this.lastFeedAt = this.lastFeedAt;
+                    }, 1000);
+                }
+                if (! window.__humanaTvDiag) {
+                    window.__humanaTvDiag = {
+                        lines: [],
+                        push(msg) {
+                            try {
+                                const stamp = new Date().toISOString().slice(11, 23);
+                                this.lines.push(stamp + ' ' + msg);
+                                if (this.lines.length > 40) {
+                                    this.lines.shift();
+                                }
+                            } catch (e) {}
+                        },
+                    };
+                }
+                window.__humanaTvDiag.push('BOOT build=' + (options.buildStamp || '?') + ' smartTv=' + String(options.isSmartTv === true));
             },
             onWatchSnapshot(detail) {
                 if (! detail || detail.panelToken !== token || ! detail.isNew || ! detail.data) {
@@ -1532,6 +1723,9 @@
                 this.fastDeskName = data.desk_name ? String(data.desk_name) : '';
                 this.fastTicketTypeName = data.ticket_type_name ? String(data.ticket_type_name) : '';
                 this.fastHighlight = Boolean(this.fastDisplayCode);
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('WATCH_NEW cursor=' + detail.cursor + ' code=' + this.fastDisplayCode);
+                }
             },
             visibleDisplayCode() {
                 return this.fastDisplayCode || this.serverDisplayCode || '';
@@ -1547,11 +1741,57 @@
                     return;
                 }
                 this._refreshInFlight = true;
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('FEED_REFRESH');
+                }
                 Promise.resolve(this.$wire.refreshFeed())
                     .catch(() => {})
                     .finally(() => {
                         this._refreshInFlight = false;
                     });
+            },
+            resumeMedia() {
+                const player = window.__humanaTvMediaPlayer;
+                if (player && typeof player.forceResume === 'function') {
+                    player.forceResume();
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('FORCE_RESUME');
+                    }
+                }
+            },
+            diagText() {
+                const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+                const panel = window.__humanaTvCallAudio && window.__humanaTvCallAudio.panels
+                    ? window.__humanaTvCallAudio.panels[token]
+                    : null;
+                const player = window.__humanaTvMediaPlayer;
+                const snap = player && typeof player.playbackSnapshot === 'function'
+                    ? player.playbackSnapshot()
+                    : {};
+                const video = document.querySelector('[data-tv-media-video]');
+                const lines = [
+                    'build=' + (this.buildStamp || '?'),
+                    'ua=' + ua.slice(0, 120),
+                    'smartTv=' + String(options.isSmartTv === true || (window.__humanaTvCallAudio && window.__humanaTvCallAudio.isSmartTvBrowser())),
+                    'pageLoads(session)=' + this.pageLoads + ' uptimeMs=' + (Date.now() - bootAt),
+                    'sound=' + String(this.soundEnabled) + ' effectPath=' + (panel && panel.lastEffectPath ? panel.lastEffectPath : '-'),
+                    'effectBuf=' + String(!!(panel && panel.effectBuffer)) + ' unlocked=' + String(!!(panel && panel.effectUnlocked)),
+                    'feedAt=' + (this.lastFeedAt || '-') + ' callId=' + (this.lastCallIdSeen || '-'),
+                    'media id=' + (snap.id || '-') + ' type=' + (snap.type || '-') + ' inst=' + (snap.instanceId || '-'),
+                    't=' + (snap.currentTime != null ? Number(snap.currentTime).toFixed(2) : '-')
+                        + ' paused=' + String(snap.paused)
+                        + ' rs=' + String(snap.readyState)
+                        + ' ns=' + String(snap.networkState)
+                        + ' muted=' + String(snap.muted),
+                    'videoEl=' + (video ? 'yes' : 'NO') + ' src=' + (video && video.currentSrc ? video.currentSrc.slice(-48) : '-'),
+                    'stuck=' + String(!!(player && player.mediaStuck)),
+                ];
+                if (window.__humanaTvDiag && window.__humanaTvDiag.lines) {
+                    lines.push('---');
+                    lines.push.apply(lines, window.__humanaTvDiag.lines.slice(-12));
+                }
+
+                return lines.join('\n');
             },
             async enableSound() {
                 if (!window.__humanaTvCallAudio) {
@@ -1560,6 +1800,9 @@
                 this.soundEnabled = true;
                 await window.__humanaTvCallAudio.enable(token, options);
                 this.soundEnabled = window.__humanaTvCallAudio.isEnabled(token);
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('SOUND_ENABLE ok=' + String(this.soundEnabled));
+                }
             },
             toggleFullscreen() {
                 // Stable shell container — do not remount media / change video src.

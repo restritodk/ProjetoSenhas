@@ -126,6 +126,9 @@
             interruptionTimer: null,
             interruptionCount: 0,
             interruptionWindowStart: 0,
+            pauseWatchdog: null,
+            mediaStuck: false,
+            stuckSince: 0,
             videoElementSeq: 0,
             instanceId: instanceId,
             debug: diagnostics,
@@ -519,10 +522,16 @@
             },
             onLocalVideoPlaying(event) {
                 const video = event && event.target;
+                this.mediaStuck = false;
+                this.stuckSince = 0;
+                this.interruptionCount = 0;
                 this.diag('VIDEO_PLAYING', {
                     seq: video ? video.__tvMediaSeq : null,
                     currentTime: video ? video.currentTime : null,
                 });
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('VIDEO_PLAYING t=' + (video ? Number(video.currentTime).toFixed(2) : '-'));
+                }
             },
             onLocalVideoTimeUpdate(event) {
                 const video = event && event.target;
@@ -549,6 +558,9 @@
                     seq: video.__tvMediaSeq,
                     currentTime: video.currentTime,
                 });
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('VIDEO_PAUSE t=' + Number(video.currentTime).toFixed(2));
+                }
                 this.onExternalInterruption();
             },
             onLocalVideoError() {
@@ -559,16 +571,11 @@
                 if (this.interruptionTimer) {
                     return;
                 }
-                const now = Date.now();
-                if (now - this.interruptionWindowStart > 60000) {
-                    this.interruptionWindowStart = now;
-                    this.interruptionCount = 0;
+                if (! this.stuckSince) {
+                    this.stuckSince = Date.now();
                 }
-                if (this.interruptionCount >= 8) {
-                    this.diag('INTERRUPTION_LIMIT', this.playbackSnapshot());
-
-                    return;
-                }
+                // Soft budget per burst — the pauseWatchdog keeps trying after the call ends.
+                const delay = this.interruptionCount < 6 ? 500 : 2000;
                 this.interruptionCount += 1;
                 const token = this.playbackToken;
                 this.interruptionTimer = setTimeout(() => {
@@ -576,7 +583,49 @@
                     if (this.playbackToken === token) {
                         this.continueAfterInterruption();
                     }
-                }, 400);
+                }, delay);
+            },
+            startPauseWatchdog() {
+                this.stopPauseWatchdog();
+                this.pauseWatchdog = setInterval(() => {
+                    const item = this.current;
+                    if (! item || item.type !== 'video' || this.advancing) {
+                        this.mediaStuck = false;
+
+                        return;
+                    }
+                    const video = this.$refs.localVideo;
+                    if (! video || ! video.isConnected || video.ended) {
+                        return;
+                    }
+                    if (! video.paused) {
+                        this.mediaStuck = false;
+                        this.stuckSince = 0;
+
+                        return;
+                    }
+                    if (! this.stuckSince) {
+                        this.stuckSince = Date.now();
+                    }
+                    this.mediaStuck = (Date.now() - this.stuckSince) > 4000;
+                    this.diag('PAUSE_WATCHDOG', this.playbackSnapshot());
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('PAUSE_WATCHDOG t=' + Number(video.currentTime).toFixed(2));
+                    }
+                    this.continueAfterInterruption();
+                }, 2000);
+            },
+            stopPauseWatchdog() {
+                if (this.pauseWatchdog) {
+                    clearInterval(this.pauseWatchdog);
+                    this.pauseWatchdog = null;
+                }
+            },
+            forceResume() {
+                this.interruptionCount = 0;
+                this.mediaStuck = false;
+                this.stuckSince = 0;
+                this.continueAfterInterruption();
             },
             continueAfterInterruption() {
                 const item = this.current;
@@ -1042,15 +1091,23 @@
                 this.diag('PLAYER_INIT', { instanceId: this.instanceId });
                 if (typeof window !== 'undefined') {
                     window.__humanaTvMediaPlayer = this;
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('PLAYER_INIT ' + this.instanceId);
+                    }
                 }
+                this.startPauseWatchdog();
                 this.$nextTick(() => this.activateCurrent());
             },
             destroy() {
+                this.stopPauseWatchdog();
                 this.clearInterruptionTimer();
                 this.clearMediaTimers();
                 this.destroyYouTube();
                 if (window.__humanaTvMediaPlayer === this) {
                     window.__humanaTvMediaPlayer = null;
+                }
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('PLAYER_DESTROY ' + this.instanceId);
                 }
                 this.diag('PLAYER_DESTROY', { instanceId: this.instanceId });
             },

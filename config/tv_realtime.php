@@ -53,4 +53,16 @@ return [
 
     'player_diagnostics' => (bool) env('TV_PLAYER_DIAGNOSTICS', false),
 
+    /*
+    |--------------------------------------------------------------------------
+    | On-screen TV diagnostics (Smart TV friendly)
+    |--------------------------------------------------------------------------
+    |
+    | Append ?tvdiag=1 to the public panel URL to show a non-sensitive HUD
+    | (player state, effect stages, pause/play). No tokens or PII are shown.
+    |
+    */
+
+    'diag_query' => (string) env('TV_DIAG_QUERY', 'tvdiag'),
+
 ];

@@ -122,6 +122,9 @@ class TvMediaBrowserPlaybackTest extends TestCase
         $this->assertStringContainsString('TTS_START_REQUESTED', $html);
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
+        $this->assertStringContainsString('playEffectBuffer', $html);
+        $this->assertStringContainsString('?v=', $html);
+        $this->assertStringContainsString('Retomar mídia', $html);
     }
 
     public function test_tv_panel_exposes_media_probe_for_browser_verification(): void
