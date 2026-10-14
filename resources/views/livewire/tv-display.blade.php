@@ -30,7 +30,7 @@
     $tvDiagEnabled = $tvAudioDebug
         || request()->boolean($diagQuery)
         || request()->query($diagQuery) === '1';
-    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v4-diagprobe'), 0, 10);
+    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v5-split-audio'), 0, 10);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -47,7 +47,7 @@
 @endphp
 <div
     id="tv-shell-root"
-    data-tv-build-family="samsung-v4-diagprobe"
+    data-tv-build-family="samsung-v5-split-audio"
     data-tv-build="{{ $tvBuildStamp }}"
     wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
     class="tv-shell relative flex flex-col overflow-hidden"
@@ -845,6 +845,31 @@
                     } catch (e) {}
                     if (! smartTv) {
                         await this.ensureAudioContext(panel);
+                    } else {
+                        // Unlock the SPEECH element separately so Google TTS never reuses
+                        // the effect element's src (that broke recalls with "old" audio).
+                        try {
+                            const speech = this.ensureSpeechAudio(panel);
+                            speech.muted = false;
+                            speech.volume = 1;
+                            const ding = panel.effectUrl || DEFAULT_EFFECT_URL;
+                            if ((speech.getAttribute('src') || '') !== ding) {
+                                speech.setAttribute('src', ding);
+                                speech.src = ding;
+                            }
+                            const sp = speech.play();
+                            if (sp && typeof sp.then === 'function') {
+                                await sp;
+                            }
+                            speech.pause();
+                            try {
+                                speech.currentTime = 0;
+                            } catch (err) {}
+                            // Leave speech unlocked; TTS overwrites src with a same-origin blob.
+                            this.log('speech element unlocked for TTS');
+                        } catch (err) {
+                            this.warn('speech unlock skipped', err && err.message ? err.message : err);
+                        }
                     }
                 } catch (e) {
                     if (! smartTv && panel.effectBuffer) {
@@ -1234,14 +1259,14 @@
             },
 
             /**
-             * Samsung/Tizen: one HTMLAudioElement plays efeitoSonoroNovo, then Google TTS.
-             * Prefetches TTS while the effect plays. No AudioContext in the happy path.
-             * States: IDLE → EFFECT_* → TTS_* → COMPLETED | ERROR_*.
+             * Samsung/Tizen announce sequence with SPLIT elements:
+             * - data-tv-call-effect stays permanently on efeitoSonoroNovo.mp3 (every call/recall)
+             * - data-tv-call-speech plays Google TTS (blob prefetch during ding)
+             * Sharing one element for both caused recalls to replay residual TTS as "old effect".
              */
             playSmartTvSequence(panel, options, onEnd) {
                 const done = () => {
                     this.revokeTtsBlob(panel);
-                    this.restoreEffectSrc(panel);
                     this.markPhase(panel, 'COMPLETED');
                     if (typeof onEnd === 'function') {
                         onEnd();
@@ -1255,26 +1280,11 @@
                     return;
                 }
 
-                let audio;
-                try {
-                    audio = this.ensureSmartTvEffect(panel);
-                } catch (e) {
-                    panel.lastPlayError = 'effect-element';
-                    this.markPhase(panel, 'ERROR_EFFECT', 'no-element');
-                    done();
-
-                    return;
-                }
-
-                audio.muted = false;
-                audio.volume = 1;
-
                 const effectUrl = options.effectUrl || null;
                 const ttsUrl = options.ttsUrl || null;
                 let ttsPrefetch = null;
 
                 if (ttsUrl) {
-                    // Overlap Google TTS warm/download with the ding (cuts ~6s wait).
                     this.markPhase(panel, 'TTS_PREFETCH', ttsUrl);
                     ttsPrefetch = this.fetchTtsBlob(ttsUrl).then((blob) => {
                         this.revokeTtsBlob(panel);
@@ -1312,16 +1322,25 @@
 
                             return;
                         }
-                        this.markPhase(panel, 'TTS_LOADING', src.slice(0, 80));
-                        this.log('TTS_START_REQUESTED', typeof src === 'string' ? src.slice(0, 120) : src);
-                        this.playHtmlAudioClip(panel, audio, src, 'tts', (ok, reason) => {
+                        let speech;
+                        try {
+                            speech = this.ensureSpeechAudio(panel);
+                        } catch (e) {
+                            panel.lastTtsError = 'speech-element';
+                            this.playGoogleTtsSmartTv(panel, ttsUrl, done, done);
+
+                            return;
+                        }
+                        this.markPhase(panel, 'TTS_LOADING', String(src).slice(0, 80));
+                        this.log('TTS_START_REQUESTED', String(src).slice(0, 120));
+                        // Speech element only — never change the effect element's src.
+                        this.playHtmlAudioClip(panel, speech, src, 'tts', (ok, reason) => {
                             if (! isCurrent()) {
                                 return;
                             }
                             if (! ok) {
                                 panel.lastTtsError = reason || 'tts-play-failed';
                                 this.warn('TTS_HTML_FAILED', panel.lastTtsError);
-                                // Last resort: WebAudio decode of the same Google TTS file.
                                 this.playGoogleTtsSmartTv(panel, ttsUrl, done, done);
 
                                 return;
@@ -1341,31 +1360,12 @@
                     return;
                 }
 
+                // Path that worked for the ding on Samsung (85aa9e6): dedicated effect element.
                 this.markPhase(panel, 'EFFECT_LOADING', effectUrl);
                 this.log('EFFECT_START_REQUESTED', effectUrl);
-                this.playHtmlAudioClip(panel, audio, effectUrl, 'effect', (ok, reason) => {
+                this.ensureEffectSrcPinned(panel);
+                this.playSmartTvEffect(panel, () => {
                     if (! isCurrent()) {
-                        return;
-                    }
-                    if (! ok) {
-                        panel.lastPlayError = reason || 'effect-play-failed';
-                        this.warn('EFFECT_HTML_FAILED', panel.lastPlayError);
-                        // Fallback: decoded efeitoSonoroNovo only (never the old oscillator).
-                        if (panel.effectBuffer) {
-                            this.playEffectBuffer(panel, afterEffect);
-
-                            return;
-                        }
-                        this.decodeEffectBuffer(panel).then((buf) => {
-                            if (buf) {
-                                this.playEffectBuffer(panel, afterEffect);
-
-                                return;
-                            }
-                            this.markPhase(panel, 'ERROR_EFFECT', panel.lastPlayError);
-                            afterEffect();
-                        });
-
                         return;
                     }
                     afterEffect();
@@ -1381,19 +1381,31 @@
                 }
             },
 
-            restoreEffectSrc(panel) {
-                const audio = panel.effectAudio;
+            /**
+             * Keep data-tv-call-effect permanently on efeitoSonoroNovo — never leave TTS/blob there.
+             */
+            ensureEffectSrcPinned(panel) {
+                const audio = this.ensureSmartTvEffect(panel);
                 const url = panel.effectUrl || DEFAULT_EFFECT_URL;
                 if (! audio || ! url) {
-                    return;
+                    return audio;
                 }
                 try {
-                    const current = audio.getAttribute('src') || '';
-                    if (current !== url) {
+                    const attr = audio.getAttribute('src') || '';
+                    const looksLikeEffect = attr.indexOf('efeitoSonoroNovo') !== -1
+                        && attr.indexOf('/tts/') === -1
+                        && attr.indexOf('blob:') !== 0;
+                    if (! looksLikeEffect || (attr !== url && attr.split('?')[0] !== url.split('?')[0])) {
                         audio.setAttribute('src', url);
                         audio.src = url;
                     }
                 } catch (e) {}
+
+                return audio;
+            },
+
+            restoreEffectSrc(panel) {
+                this.ensureEffectSrcPinned(panel);
             },
 
             /**
@@ -1569,11 +1581,20 @@
 
                 try {
                     const attr = audio.getAttribute('src') || '';
+                    const srcStr = String(src || '');
+                    const isEffectFile = (u) => typeof u === 'string'
+                        && u.indexOf('efeitoSonoroNovo') !== -1
+                        && u.indexOf('/tts/') === -1
+                        && u.indexOf('blob:') !== 0;
+                    // Only skip src rewrite for effect when BOTH sides are the ding MP3.
+                    // Never treat residual TTS/blob currentSrc as "same effect" (recall bug).
                     const sameEffect = kind === 'effect'
-                        && (attr === src || (audio.currentSrc && audio.currentSrc.indexOf('efeitoSonoroNovo') !== -1));
+                        && isEffectFile(attr)
+                        && isEffectFile(srcStr)
+                        && (attr === srcStr || attr.split('?')[0] === srcStr.split('?')[0]);
                     if (! sameEffect) {
-                        audio.setAttribute('src', src);
-                        audio.src = src;
+                        audio.setAttribute('src', srcStr);
+                        audio.src = srcStr;
                     }
                 } catch (e) {
                     finish(false, 'src-set-failed');

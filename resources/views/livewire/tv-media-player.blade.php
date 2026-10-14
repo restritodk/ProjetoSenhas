@@ -59,7 +59,8 @@
                     x-on:waiting="diagMediaEvent('waiting', \$event)"
                     x-on:stalled="diagMediaEvent('stalled', \$event)"
                     x-on:suspend="diagMediaEvent('suspend', \$event)"
-                    x-on:emptied="diagMediaEvent('emptied', \$event)"
+                    x-on:emptied="onLocalVideoEmptied(\$event)"
+                    x-on:loadstart="diagMediaEvent('loadstart', \$event)"
                     x-on:abort="diagMediaEvent('abort', \$event)"
                     x-on:timeupdate="onLocalVideoTimeUpdate(\$event)"
                     x-on:ended="onLocalVideoEnded()"
@@ -241,16 +242,35 @@
                 } catch (e) {}
             },
             diagMediaEvent(name, event) {
+                const video = event && event.target;
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push(
+                        'VIDEO_' + String(name).toUpperCase()
+                        + ' t=' + (video ? Number(video.currentTime || 0).toFixed(2) : '-')
+                        + ' rs=' + (video ? video.readyState : '-')
+                        + ' announce=' + String(this.announceActive)
+                    );
+                }
                 if (! this.debug) {
                     return;
                 }
-                const video = event && event.target;
                 this.diag('VIDEO_' + String(name).toUpperCase(), {
                     instanceId: this.instanceId,
                     currentTime: video ? video.currentTime : null,
                     paused: video ? video.paused : null,
                     readyState: video ? video.readyState : null,
                 });
+            },
+            onLocalVideoEmptied(event) {
+                const video = event && event.target;
+                if (video && video === this.$refs.localVideo) {
+                    const t = Number(video.currentTime) || 0;
+                    if (t > 0) {
+                        this.lastVideoTime = Math.max(Number(this.lastVideoTime) || 0, t);
+                    }
+                }
+                this.diagMediaEvent('emptied', event);
+                // Do NOT rebind src / activateCurrent here — that restarts the playlist item.
             },
             debugLog(message, detail) {
                 this.diag(message, detail);
@@ -388,15 +408,33 @@
                 }
 
                 const sameItem = this.boundVideoItemId === item.id;
-                const sameSrc = video.getAttribute('src') === item.url || video.currentSrc.endsWith(item.url);
-                if (sameItem && sameSrc && video.readyState > 0) {
+                const attrSrc = video.getAttribute('src') || '';
+                const sameSrc = attrSrc === item.url
+                    || (video.currentSrc && (video.currentSrc === item.url || video.currentSrc.endsWith(item.url)));
+                // Never rebind the same playlist item just because readyState dropped during
+                // a call announcement — that reloads the file and forces t=0.
+                if (sameItem && sameSrc) {
                     return false;
                 }
 
+                const resumeAt = sameItem ? (Number(this.lastVideoTime) || 0) : 0;
                 this.boundVideoItemId = item.id;
-                this.lastVideoTime = 0;
+                if (! sameItem) {
+                    this.lastVideoTime = 0;
+                }
                 video.setAttribute('src', item.url);
-                this.diag('VIDEO_SRC_BOUND', { id: item.id, url: item.url, seq: video.__tvMediaSeq });
+                if (resumeAt > 1) {
+                    const onMeta = () => {
+                        video.removeEventListener('loadedmetadata', onMeta);
+                        try {
+                            if (Number(video.currentTime) < 0.75) {
+                                video.currentTime = resumeAt;
+                            }
+                        } catch (e) {}
+                    };
+                    video.addEventListener('loadedmetadata', onMeta);
+                }
+                this.diag('VIDEO_SRC_BOUND', { id: item.id, url: item.url, seq: video.__tvMediaSeq, resumeAt: resumeAt });
 
                 return true;
             },
@@ -662,6 +700,24 @@
                 this.stuckSince = 0;
                 this.continueAfterInterruption();
             },
+            restoreVideoPositionIfNeeded(video) {
+                if (! video) {
+                    return;
+                }
+                const saved = Number(this.lastVideoTime) || 0;
+                const cur = Number(video.currentTime) || 0;
+                if (saved > 1 && cur < 0.75 && (saved - cur) > 1) {
+                    try {
+                        video.currentTime = saved;
+                        this.diag('VIDEO_SEEK_RESTORE', { from: cur, to: saved, seq: video.__tvMediaSeq });
+                        if (window.__humanaTvDiag) {
+                            window.__humanaTvDiag.push(
+                                'VIDEO_SEEK_RESTORE ' + cur.toFixed(2) + '→' + saved.toFixed(2)
+                            );
+                        }
+                    } catch (e) {}
+                }
+            },
             continueAfterInterruption() {
                 const item = this.current;
                 if (! item || this.advancing) {
@@ -676,9 +732,11 @@
                     if (! video.paused || video.ended) {
                         return;
                     }
+                    this.restoreVideoPositionIfNeeded(video);
                     this.diag('VIDEO_CONTINUE', {
                         seq: video.__tvMediaSeq,
                         currentTime: video.currentTime,
+                        saved: this.lastVideoTime,
                     });
                     const attempt = video.play();
                     if (attempt && typeof attempt.then === 'function') {
@@ -1129,19 +1187,34 @@
                         window.__humanaTvDiag.push('PLAYER_INIT ' + this.instanceId);
                     }
                 }
-                this._onAnnounceBegin = () => {
+                this._onAnnounceBegin = (event) => {
+                    const video = this.$refs.localVideo;
+                    if (video && video.isConnected && ! video.ended) {
+                        const t = Number(video.currentTime) || 0;
+                        if (t > 0) {
+                            this.lastVideoTime = t;
+                        }
+                    }
                     this.announceActive = true;
                     this.clearInterruptionTimer();
+                    const callId = event && event.detail ? event.detail.callId : null;
                     if (window.__humanaTvDiag) {
-                        window.__humanaTvDiag.push('ANNOUNCE_BEGIN hold-resume');
+                        window.__humanaTvDiag.push(
+                            'ANNOUNCE_BEGIN hold call=' + (callId != null ? callId : '-')
+                            + ' t=' + (Number(this.lastVideoTime) || 0).toFixed(2)
+                            + ' id=' + (this.videoIdentity || '-')
+                        );
                     }
                 };
                 this._onAnnounceEnd = () => {
                     this.announceActive = false;
                     if (window.__humanaTvDiag) {
-                        window.__humanaTvDiag.push('ANNOUNCE_END resume');
+                        window.__humanaTvDiag.push(
+                            'ANNOUNCE_END resume tSaved=' + (Number(this.lastVideoTime) || 0).toFixed(2)
+                            + ' id=' + (this.videoIdentity || '-')
+                        );
                     }
-                    // Single recovery after effect+TTS — preserves currentTime (no load/src).
+                    // Single recovery after effect+TTS — no load()/src; seek restore if Tizen reset t.
                     this.forceResume();
                 };
                 window.addEventListener('tv-call-audio-begin', this._onAnnounceBegin);
