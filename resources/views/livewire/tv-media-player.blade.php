@@ -129,6 +129,9 @@
             pauseWatchdog: null,
             mediaStuck: false,
             stuckSince: 0,
+            announceActive: false,
+            lastVideoError: null,
+            videoIdentity: null,
             videoElementSeq: 0,
             instanceId: instanceId,
             debug: diagnostics,
@@ -213,6 +216,7 @@
 
                 return {
                     instanceId: this.instanceId,
+                    videoIdentity: this.videoIdentity || (video && video.__tvMediaSeq ? this.instanceId + '#' + video.__tvMediaSeq : null),
                     id: item ? item.id : null,
                     type: item ? item.type : null,
                     seq: video ? video.__tvMediaSeq : null,
@@ -224,6 +228,8 @@
                     muted: video ? video.muted : null,
                     volume: video ? video.volume : null,
                     currentSrc: video ? video.currentSrc : null,
+                    announceActive: this.announceActive,
+                    lastVideoError: this.lastVideoError,
                 };
             },
             diag(tag, detail) {
@@ -374,7 +380,11 @@
                 if (! video.__tvMediaSeq) {
                     this.videoElementSeq += 1;
                     video.__tvMediaSeq = this.videoElementSeq;
+                    this.videoIdentity = this.instanceId + '#' + video.__tvMediaSeq;
                     this.diag('VIDEO_ELEMENT_BOUND', { seq: video.__tvMediaSeq, instanceId: this.instanceId });
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('VIDEO_BOUND ' + this.videoIdentity);
+                    }
                 }
 
                 const sameItem = this.boundVideoItemId === item.id;
@@ -557,30 +567,52 @@
                 this.diag('VIDEO_PAUSE_EXTERNAL', {
                     seq: video.__tvMediaSeq,
                     currentTime: video.currentTime,
+                    announceActive: this.announceActive,
                 });
                 if (window.__humanaTvDiag) {
-                    window.__humanaTvDiag.push('VIDEO_PAUSE t=' + Number(video.currentTime).toFixed(2));
+                    window.__humanaTvDiag.push(
+                        'VIDEO_PAUSE t=' + Number(video.currentTime).toFixed(2)
+                        + ' announce=' + String(this.announceActive)
+                    );
+                }
+                // During effect/TTS, Tizen often pauses video — do not fight the audio pipeline.
+                if (this.announceActive) {
+                    if (! this.stuckSince) {
+                        this.stuckSince = Date.now();
+                    }
+
+                    return;
                 }
                 this.onExternalInterruption();
             },
             onLocalVideoError() {
+                this.lastVideoError = 'video-error';
                 this.diag('VIDEO_ERROR', this.playbackSnapshot());
+                if (this.announceActive) {
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('VIDEO_ERROR deferred until announce end');
+                    }
+
+                    return;
+                }
                 this.failCurrent('video-error');
             },
             onExternalInterruption() {
+                if (this.announceActive) {
+                    return;
+                }
                 if (this.interruptionTimer) {
                     return;
                 }
                 if (! this.stuckSince) {
                     this.stuckSince = Date.now();
                 }
-                // Soft budget per burst — the pauseWatchdog keeps trying after the call ends.
                 const delay = this.interruptionCount < 6 ? 500 : 2000;
                 this.interruptionCount += 1;
                 const token = this.playbackToken;
                 this.interruptionTimer = setTimeout(() => {
                     this.interruptionTimer = null;
-                    if (this.playbackToken === token) {
+                    if (this.playbackToken === token && ! this.announceActive) {
                         this.continueAfterInterruption();
                     }
                 }, delay);
@@ -588,6 +620,9 @@
             startPauseWatchdog() {
                 this.stopPauseWatchdog();
                 this.pauseWatchdog = setInterval(() => {
+                    if (this.announceActive) {
+                        return;
+                    }
                     const item = this.current;
                     if (! item || item.type !== 'video' || this.advancing) {
                         this.mediaStuck = false;
@@ -1086,8 +1121,7 @@
                 });
             },
             init() {
-                // Absolute rule: do NOT subscribe to call-announcement bus events.
-                // Call announcements must never mutate this player's muted/src/playback.
+                // Only gate resume around announcements — never mute/load/src on call events.
                 this.diag('PLAYER_INIT', { instanceId: this.instanceId });
                 if (typeof window !== 'undefined') {
                     window.__humanaTvMediaPlayer = this;
@@ -1095,6 +1129,23 @@
                         window.__humanaTvDiag.push('PLAYER_INIT ' + this.instanceId);
                     }
                 }
+                this._onAnnounceBegin = () => {
+                    this.announceActive = true;
+                    this.clearInterruptionTimer();
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('ANNOUNCE_BEGIN hold-resume');
+                    }
+                };
+                this._onAnnounceEnd = () => {
+                    this.announceActive = false;
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('ANNOUNCE_END resume');
+                    }
+                    // Single recovery after effect+TTS — preserves currentTime (no load/src).
+                    this.forceResume();
+                };
+                window.addEventListener('tv-call-audio-begin', this._onAnnounceBegin);
+                window.addEventListener('tv-call-audio-end', this._onAnnounceEnd);
                 this.startPauseWatchdog();
                 this.$nextTick(() => this.activateCurrent());
             },
@@ -1103,6 +1154,12 @@
                 this.clearInterruptionTimer();
                 this.clearMediaTimers();
                 this.destroyYouTube();
+                if (this._onAnnounceBegin) {
+                    window.removeEventListener('tv-call-audio-begin', this._onAnnounceBegin);
+                }
+                if (this._onAnnounceEnd) {
+                    window.removeEventListener('tv-call-audio-end', this._onAnnounceEnd);
+                }
                 if (window.__humanaTvMediaPlayer === this) {
                     window.__humanaTvMediaPlayer = null;
                 }

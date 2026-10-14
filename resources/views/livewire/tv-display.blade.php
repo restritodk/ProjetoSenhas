@@ -30,7 +30,7 @@
     $tvDiagEnabled = $tvAudioDebug
         || request()->boolean($diagQuery)
         || request()->query($diagQuery) === '1';
-    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v2'), 0, 10);
+    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v3-tts'), 0, 10);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -508,6 +508,11 @@
                         effectBuffer: null,
                         effectDecodeFailed: false,
                         lastEffectPath: null,
+                        lastTtsPath: null,
+                        lastTtsError: null,
+                        audioPhase: 'idle',
+                        effectSource: null,
+                        ttsSource: null,
                     };
 
                     try {
@@ -615,24 +620,37 @@
                 }
             },
 
+            stopBufferSources(panel) {
+                ['effectSource', 'ttsSource'].forEach((key) => {
+                    const source = panel[key];
+                    if (! source) {
+                        return;
+                    }
+                    try {
+                        source.onended = null;
+                        source.stop(0);
+                    } catch (e) {}
+                    panel[key] = null;
+                });
+            },
+
             /**
-             * Play the NEW efeitoSonoroNovo via WebAudio (decoded buffer).
-             * This is NOT the old oscillator beep — same MP3 file, Samsung-safe path.
+             * Play a decoded AudioBuffer (efeitoSonoroNovo or Google TTS WAV/MP3).
              */
-            playEffectBuffer(panel, onEnd) {
+            playDecodedBuffer(panel, buffer, kind, onEnd) {
                 const safeEnd = () => {
                     if (typeof onEnd === 'function') {
                         onEnd();
                     }
                 };
 
-                const buffer = panel.effectBuffer;
                 if (! buffer) {
                     safeEnd();
 
                     return;
                 }
 
+                this.stopBufferSources(panel);
                 this.ensureAudioContext(panel).then((ctx) => {
                     if (! ctx) {
                         safeEnd();
@@ -640,6 +658,9 @@
                         return;
                     }
                     try {
+                        if (ctx.state === 'suspended') {
+                            ctx.resume().catch(() => {});
+                        }
                         const source = ctx.createBufferSource();
                         const gain = ctx.createGain();
                         const peak = Math.max(0.05, Math.min(1, (panel.chimeVolume / 100)));
@@ -648,8 +669,18 @@
                         source.connect(gain);
                         gain.connect(ctx.destination);
                         panel.speaking = true;
-                        panel.lastEffectPath = 'webaudio-buffer';
-                        this.log('EFFECT_PLAY_RESOLVED', 'webaudio-buffer');
+                        if (kind === 'effect') {
+                            panel.effectSource = source;
+                            panel.lastEffectPath = 'webaudio-buffer';
+                            panel.audioPhase = 'effect';
+                            this.log('EFFECT_PLAY_RESOLVED', 'webaudio-buffer');
+                        } else {
+                            panel.ttsSource = source;
+                            panel.lastTtsPath = 'webaudio-buffer';
+                            panel.lastTtsError = null;
+                            panel.audioPhase = 'tts';
+                            this.log('TTS_PLAYING', { path: 'webaudio-buffer', duration: buffer.duration || null });
+                        }
                         let ended = false;
                         const finish = (reason) => {
                             if (ended) {
@@ -657,18 +688,54 @@
                             }
                             ended = true;
                             panel.speaking = false;
-                            this.log('EFFECT_ENDED', reason || 'buffer');
+                            if (kind === 'effect') {
+                                panel.effectSource = null;
+                                this.log('EFFECT_ENDED', reason || 'buffer');
+                            } else {
+                                panel.ttsSource = null;
+                                panel.audioPhase = 'idle';
+                                this.log('TTS_ENDED', reason || 'buffer');
+                            }
                             safeEnd();
                         };
                         source.onended = () => finish('buffer-ended');
                         source.start(0);
-                        const ms = Math.min(MAX_CLIP_MS, Math.max(500, (buffer.duration || 2) * 1000 + 400));
+                        const ms = Math.min(MAX_CLIP_MS, Math.max(500, (buffer.duration || 2) * 1000 + 500));
                         setTimeout(() => finish('buffer-timeout'), ms);
                     } catch (e) {
-                        this.warn('AUDIO_ERROR', e && e.message ? e.message : e);
+                        const msg = e && e.message ? e.message : String(e || 'buffer-play');
+                        if (kind === 'tts') {
+                            panel.lastTtsError = msg;
+                        }
+                        this.warn('AUDIO_ERROR', msg);
                         safeEnd();
                     }
                 }).catch(() => safeEnd());
+            },
+
+            /**
+             * Play the NEW efeitoSonoroNovo via WebAudio (decoded buffer).
+             * This is NOT the old oscillator beep — same MP3 file, Samsung-safe path.
+             */
+            playEffectBuffer(panel, onEnd) {
+                this.playDecodedBuffer(panel, panel.effectBuffer, 'effect', onEnd);
+            },
+
+            async decodeUrlToBuffer(panel, url) {
+                const ctx = await this.ensureAudioContext(panel);
+                if (! ctx || ! url) {
+                    return null;
+                }
+                const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+                if (! response.ok) {
+                    throw new Error('tts-http-' + response.status);
+                }
+                const raw = await response.arrayBuffer();
+                if (raw.byteLength < 64) {
+                    throw new Error('tts-empty-body');
+                }
+
+                return await ctx.decodeAudioData(raw.slice(0));
             },
 
             async unlockSmartTvEffect(panel) {
@@ -720,22 +787,9 @@
                         audio.pause();
                         audio.currentTime = 0;
                     } catch (e) {}
-                    try {
-                        const speech = this.ensureSpeechAudio(panel);
-                        speech.muted = false;
-                        speech.volume = 1;
-                        if (! speech.getAttribute('src')) {
-                            speech.src = panel.effectUrl || DEFAULT_EFFECT_URL;
-                        }
-                        const speechPlay = speech.play();
-                        if (speechPlay && typeof speechPlay.then === 'function') {
-                            await speechPlay;
-                        }
-                        speech.pause();
-                        try {
-                            speech.currentTime = 0;
-                        } catch (err) {}
-                    } catch (err) {}
+                    // Do NOT unlock the speech element with the effect URL — Samsung ties
+                    // HTMLAudio unlock to the current src; changing src later for Google TTS fails.
+                    await this.ensureAudioContext(panel);
                 } catch (e) {
                     // HTMLAudio unlock failed — WebAudio buffer of the SAME mp3 may still work.
                     if (panel.effectBuffer) {
@@ -959,57 +1013,124 @@
                         return;
                     }
                     this.warn('call audio watchdog — forcing next', callId);
+                    this.stopBufferSources(panel);
                     this.stopSmartTvEffect(panel);
                     this.stopSpeechElement(panel);
                     finish();
                 }, MAX_CALL_MS);
 
-                const audioUrl = payload.audioUrl || payload.audio_url || null;
+                let audioUrl = payload.audioUrl || payload.audio_url || null;
                 const announcement = payload.announcement || '';
 
+                // Reconstruct relative TTS URL when the feed omitted it (warm race).
+                if (! audioUrl && callId && token) {
+                    audioUrl = '/painel/' + encodeURIComponent(token) + '/tts/' + callId;
+                }
+
                 const playVoice = () => {
-                    if (!isCurrentItem()) {
+                    if (! isCurrentItem()) {
                         return;
                     }
-                    if (!panel.clinicSpeechEnabled || !panel.soundEnabled) {
+                    if (! panel.clinicSpeechEnabled || ! panel.soundEnabled) {
+                        this.warn('TTS_SKIPPED', 'speech disabled');
                         finish();
+
                         return;
                     }
 
-                    if (audioUrl) {
-                        const onVoiceError = () => {
-                            // Smart TV: MP3 effect, then server audio. Skip speechSynthesis on this branch.
-                            if (panel.isSmartTv || this.isSmartTvBrowser()) {
-                                finish();
-                                return;
-                            }
-                            this.speak(panel, announcement, finish, null);
-                        };
-                        this.playServerAudio(panel, audioUrl, finish, onVoiceError);
+                    if (! audioUrl) {
+                        panel.lastTtsError = 'missing-audio-url';
+                        this.warn('TTS_SKIPPED', 'missing-audio-url');
+                        finish();
+
                         return;
                     }
 
+                    panel.audioPhase = 'tts';
+                    this.stopBufferSources(panel);
+                    this.stopSmartTvEffect(panel);
+
+                    // Smart TV: Google TTS via WebAudio (AudioContext unlocked on Ativar som).
+                    // HTMLAudio with a new src after the effect often gets NotAllowedError on Tizen.
                     if (panel.isSmartTv || this.isSmartTvBrowser()) {
-                        finish();
+                        panel.isSmartTv = true;
+                        this.playGoogleTtsSmartTv(panel, audioUrl, finish);
+
                         return;
                     }
 
-                    this.speak(panel, announcement, finish, null);
+                    const onVoiceError = () => {
+                        // Desktop: try WebAudio Google TTS before speechSynthesis.
+                        this.playGoogleTtsSmartTv(panel, audioUrl, finish, () => {
+                            this.speak(panel, announcement, finish, null);
+                        });
+                    };
+                    this.playServerAudio(panel, audioUrl, finish, onVoiceError);
                 };
 
-                // Call effect MP3 (efeitoSonoroNovo) for every platform, then TTS.
-                // Smart TV: do not fall through to speechSynthesis in playVoice.
+                // Call effect MP3 (efeitoSonoroNovo) for every platform, then Google TTS.
                 if (panel.isSmartTv || this.isSmartTvBrowser()) {
                     panel.isSmartTv = true;
                 }
 
                 if (panel.clinicChimeEnabled) {
+                    panel.audioPhase = 'effect';
                     this.log('EFFECT_START_REQUESTED', panel.effectUrl || DEFAULT_EFFECT_URL);
                     this.playSmartTvEffect(panel, playVoice);
+
                     return;
                 }
 
                 playVoice();
+            },
+
+            /**
+             * Google Cloud TTS for Smart TV: fetch the panel TTS URL, decode, play via WebAudio.
+             * Retries briefly while the warm job finishes writing the cache.
+             */
+            playGoogleTtsSmartTv(panel, url, onEnd, onFatal) {
+                const done = () => {
+                    panel.audioPhase = 'idle';
+                    if (typeof onEnd === 'function') {
+                        onEnd();
+                    }
+                };
+                const fatal = () => {
+                    panel.audioPhase = 'idle';
+                    if (typeof onFatal === 'function') {
+                        onFatal();
+
+                        return;
+                    }
+                    done();
+                };
+
+                this.log('TTS_START_REQUESTED', url);
+                panel.lastTtsError = null;
+
+                let attempt = 0;
+                const maxAttempts = 5;
+                const tryOnce = () => {
+                    attempt += 1;
+                    this.decodeUrlToBuffer(panel, url).then((buffer) => {
+                        if (! buffer) {
+                            throw new Error('tts-decode-empty');
+                        }
+                        this.playDecodedBuffer(panel, buffer, 'tts', done);
+                    }).catch((err) => {
+                        const msg = err && err.message ? err.message : String(err || 'tts-fail');
+                        panel.lastTtsError = msg;
+                        this.warn('TTS_RETRY', { attempt: attempt, error: msg });
+                        if (attempt < maxAttempts) {
+                            setTimeout(tryOnce, 700 * attempt);
+
+                            return;
+                        }
+                        this.warn('AUDIO_ERROR', 'tts-exhausted: ' + msg);
+                        fatal();
+                    });
+                };
+                tryOnce();
             },
 
             playSmartTvEffect(panel, onEnd) {
@@ -1207,6 +1328,13 @@
             },
 
             stopSmartTvEffect(panel) {
+                if (panel.effectSource) {
+                    try {
+                        panel.effectSource.onended = null;
+                        panel.effectSource.stop(0);
+                    } catch (e) {}
+                    panel.effectSource = null;
+                }
                 if (!panel.effectAudio) {
                     return;
                 }
@@ -1262,6 +1390,8 @@
              */
             playServerAudio(panel, url, onEnd, onError) {
                 this.log('TTS_START_REQUESTED', url || null);
+                panel.lastTtsError = null;
+                panel.audioPhase = 'tts';
 
                 const fail = () => {
                     if (typeof onError === 'function') {
@@ -1274,6 +1404,7 @@
                 };
 
                 if (!url) {
+                    panel.lastTtsError = 'missing-url';
                     fail();
                     return;
                 }
@@ -1282,11 +1413,13 @@
                 try {
                     audio = this.ensureSpeechAudio(panel);
                 } catch (e) {
+                    panel.lastTtsError = 'speech-element';
                     fail();
                     return;
                 }
 
                 // Only one call clip at a time.
+                this.stopBufferSources(panel);
                 this.stopSmartTvEffect(panel);
 
                 panel.speaking = true;
@@ -1294,6 +1427,7 @@
                 audio.volume = 1;
 
                 let settled = false;
+                let started = false;
                 let timer = null;
                 const clearTimer = () => {
                     if (timer) {
@@ -1313,13 +1447,16 @@
                         audio.onplaying = null;
                     } catch (e) {}
                     panel.speaking = false;
+                    panel.audioPhase = 'idle';
                     if (ok) {
+                        panel.lastTtsPath = 'html-audio';
                         this.log('TTS_ENDED');
                         if (typeof onEnd === 'function') {
                             onEnd();
                         }
                         return;
                     }
+                    panel.lastTtsError = reason || 'voice-failed';
                     this.warn('AUDIO_ERROR', reason || 'voice-failed');
                     try {
                         audio.pause();
@@ -1335,10 +1472,29 @@
                     const limit = isFinite(duration) && duration > 0
                         ? Math.min(MAX_CLIP_MS, duration * 1000 + 2000)
                         : MAX_CLIP_MS;
+                    panel.lastTtsPath = 'html-audio';
                     this.log('TTS_PLAYING', { duration: isFinite(duration) ? duration : null });
                     timer = setTimeout(() => done(true), limit);
                 };
                 timer = setTimeout(() => done(false, 'load-timeout'), LOAD_TIMEOUT_MS);
+
+                const startPlay = () => {
+                    if (started || settled) {
+                        return;
+                    }
+                    started = true;
+                    try {
+                        const playPromise = audio.play();
+                        if (playPromise && typeof playPromise.catch === 'function') {
+                            playPromise.catch((err) => {
+                                // Prefer WebAudio Google TTS fallback over disabling sound.
+                                done(false, err && err.name ? err.name : 'play-rejected');
+                            });
+                        }
+                    } catch (e) {
+                        done(false, 'play-throw');
+                    }
+                };
 
                 try {
                     audio.pause();
@@ -1346,12 +1502,21 @@
 
                 try {
                     audio.src = url;
-                    const playPromise = audio.play();
-                    if (playPromise && typeof playPromise.catch === 'function') {
-                        playPromise.catch((err) => {
-                            this.markAudioBlocked(panel, err);
-                            done(false, err && err.name ? err.name : 'play-rejected');
-                        });
+                    if (audio.readyState >= 2) {
+                        startPlay();
+                    } else {
+                        const onReady = () => {
+                            audio.removeEventListener('canplay', onReady);
+                            audio.removeEventListener('loadeddata', onReady);
+                            startPlay();
+                        };
+                        audio.addEventListener('canplay', onReady);
+                        audio.addEventListener('loadeddata', onReady);
+                        setTimeout(() => {
+                            if (! settled) {
+                                startPlay();
+                            }
+                        }, 1500);
                     }
                 } catch (e) {
                     done(false, 'play-throw');
@@ -1774,16 +1939,26 @@
                     'ua=' + ua.slice(0, 120),
                     'smartTv=' + String(options.isSmartTv === true || (window.__humanaTvCallAudio && window.__humanaTvCallAudio.isSmartTvBrowser())),
                     'pageLoads(session)=' + this.pageLoads + ' uptimeMs=' + (Date.now() - bootAt),
-                    'sound=' + String(this.soundEnabled) + ' effectPath=' + (panel && panel.lastEffectPath ? panel.lastEffectPath : '-'),
-                    'effectBuf=' + String(!!(panel && panel.effectBuffer)) + ' unlocked=' + String(!!(panel && panel.effectUnlocked)),
+                    'sound=' + String(this.soundEnabled)
+                        + ' phase=' + (panel && panel.audioPhase ? panel.audioPhase : 'idle'),
+                    'effectPath=' + (panel && panel.lastEffectPath ? panel.lastEffectPath : '-')
+                        + ' buf=' + String(!!(panel && panel.effectBuffer))
+                        + ' unlocked=' + String(!!(panel && panel.effectUnlocked)),
+                    'ttsPath=' + (panel && panel.lastTtsPath ? panel.lastTtsPath : '-')
+                        + ' ttsErr=' + (panel && panel.lastTtsError ? panel.lastTtsError : '-'),
                     'feedAt=' + (this.lastFeedAt || '-') + ' callId=' + (this.lastCallIdSeen || '-'),
-                    'media id=' + (snap.id || '-') + ' type=' + (snap.type || '-') + ' inst=' + (snap.instanceId || '-'),
+                    'videoId=' + (snap.videoIdentity || '-')
+                        + ' media=' + (snap.id || '-') + '/' + (snap.type || '-')
+                        + ' inst=' + (snap.instanceId || '-'),
                     't=' + (snap.currentTime != null ? Number(snap.currentTime).toFixed(2) : '-')
                         + ' paused=' + String(snap.paused)
                         + ' rs=' + String(snap.readyState)
                         + ' ns=' + String(snap.networkState)
-                        + ' muted=' + String(snap.muted),
-                    'videoEl=' + (video ? 'yes' : 'NO') + ' src=' + (video && video.currentSrc ? video.currentSrc.slice(-48) : '-'),
+                        + ' muted=' + String(snap.muted)
+                        + ' announce=' + String(snap.announceActive),
+                    'videoEl=' + (video ? 'yes' : 'NO')
+                        + ' src=' + (video && video.currentSrc ? video.currentSrc.slice(-40) : '-')
+                        + ' vErr=' + (snap.lastVideoError || '-'),
                     'stuck=' + String(!!(player && player.mediaStuck)),
                 ];
                 if (window.__humanaTvDiag && window.__humanaTvDiag.lines) {

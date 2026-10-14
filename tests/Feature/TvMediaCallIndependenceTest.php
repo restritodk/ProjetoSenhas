@@ -45,9 +45,11 @@ class TvMediaCallIndependenceTest extends TestCase
         $this->assertStringContainsString('enforceConfiguredMute', $html);
         $this->assertStringContainsString('play_with_audio === true', $html);
         $this->assertStringContainsString('bindVideoSrc', $html);
-        // Absolute isolation: media player must not subscribe to call-audio events.
-        $this->assertStringNotContainsString("addEventListener('tv-call-audio-begin'", $html);
-        $this->assertStringNotContainsString("addEventListener('tv-call-audio-end'", $html);
+        // Resume gating after announce is allowed; mute-duck / load() on call is not.
+        $this->assertStringContainsString("addEventListener('tv-call-audio-begin'", $html);
+        $this->assertStringContainsString("addEventListener('tv-call-audio-end'", $html);
+        $this->assertStringContainsString('announceActive', $html);
+        $this->assertStringContainsString('ANNOUNCE_END resume', $html);
         $this->assertStringNotContainsString('callDucked', $html);
         $this->assertStringNotContainsString('callAudioActive', $html);
         $this->assertStringNotContainsString('startMuteWatchdog', $html);

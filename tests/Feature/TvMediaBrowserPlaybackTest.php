@@ -48,7 +48,8 @@ class TvMediaBrowserPlaybackTest extends TestCase
         $this->assertStringContainsString('bindVideoSrc', $html);
         $this->assertStringContainsString('x-show="hasItems && current && current.type === \'video\'"', $html);
         $this->assertStringNotContainsString('template x-if="hasItems && current && current.type === \'video\'"', $html);
-        $this->assertStringNotContainsString("addEventListener('tv-call-audio-begin'", $html);
+        $this->assertStringContainsString("addEventListener('tv-call-audio-begin'", $html);
+        $this->assertStringContainsString('announceActive', $html);
         $this->assertStringNotContainsString('callAudioActive', $html);
         $this->assertStringNotContainsString('video.load()', $html);
     }
@@ -123,6 +124,7 @@ class TvMediaBrowserPlaybackTest extends TestCase
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('playEffectBuffer', $html);
+        $this->assertStringContainsString('playGoogleTtsSmartTv', $html);
         $this->assertStringContainsString('?v=', $html);
         $this->assertStringContainsString('Retomar mídia', $html);
     }
