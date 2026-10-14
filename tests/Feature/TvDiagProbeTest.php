@@ -40,7 +40,7 @@ class TvDiagProbeTest extends TestCase
             'WATCH_ERR',
             'watchSnapshot',
             'sample-tts',
-            'samsung-v5-split-audio',
+            'samsung-v6-recall-media',
         ] as $needle) {
             $this->assertTrue(
                 str_contains($html, $needle),

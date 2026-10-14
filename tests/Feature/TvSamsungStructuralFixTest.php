@@ -42,7 +42,7 @@ class TvSamsungStructuralFixTest extends TestCase
         $this->assertStringContainsString('playHtmlAudioClip', $html);
         $this->assertStringContainsString('fetchTtsBlob', $html);
         $this->assertStringContainsString('steals the Tizen media pipeline', $html);
-        $this->assertStringContainsString('data-tv-build-family="samsung-v5-split-audio"', $html);
+        $this->assertStringContainsString('data-tv-build-family="samsung-v6-recall-media"', $html);
         $this->assertStringContainsString('diagProbeEffect', $html);
         $this->assertStringContainsString('probeEffect', $html);
         $this->assertStringContainsString('sample-tts', $html);

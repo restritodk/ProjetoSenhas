@@ -565,8 +565,97 @@
                 if (! item || item.type !== 'video') {
                     return;
                 }
+                // Tizen often fires a spurious `ended` when call <audio> steals the media
+                // pipeline. With a 1-item playlist that used to call restartSingleItem(t=0).
+                if (this.announceActive) {
+                    const video = this.$refs.localVideo;
+                    const saved = Number(this.lastVideoTime) || 0;
+                    this.diag('VIDEO_ENDED_IGNORED_DURING_ANNOUNCE', {
+                        id: item.id,
+                        saved: saved,
+                        seq: video ? video.__tvMediaSeq : null,
+                    });
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push(
+                            'VIDEO_ENDED ignored(announce) saved=' + saved.toFixed(2)
+                            + ' id=' + (this.videoIdentity || '-')
+                        );
+                    }
+
+                    return;
+                }
+                const video = this.$refs.localVideo;
+                const saved = Number(this.lastVideoTime) || 0;
+                const duration = video && isFinite(video.duration) ? Number(video.duration) : 0;
+                // False end mid-clip (pipeline glitch): recover instead of restarting from 0.
+                if (saved > 2 && duration > 0 && saved < (duration - 1.5)) {
+                    this.diag('VIDEO_ENDED_FALSE', { id: item.id, saved: saved, duration: duration });
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push('VIDEO_ENDED_FALSE recover t=' + saved.toFixed(2));
+                    }
+                    this.recoverVideoPlayback(item);
+
+                    return;
+                }
                 this.diag('VIDEO_ENDED', { id: item.id });
+                if (window.__humanaTvDiag) {
+                    window.__humanaTvDiag.push('VIDEO_ENDED advance id=' + item.id);
+                }
                 this.advanceToNextMedia('VIDEO_ENDED');
+            },
+            recoverVideoPlayback(item) {
+                const video = this.$refs.localVideo;
+                if (! video || ! item || item.type !== 'video') {
+                    return;
+                }
+                const resumeAt = Number(this.lastVideoTime) || 0;
+                const url = typeof item.url === 'string' ? item.url : '';
+                if (! url) {
+                    return;
+                }
+                const needsReload = video.readyState < 2
+                    || ! video.currentSrc
+                    || video.networkState === 3 /* NETWORK_NO_SOURCE */;
+
+                const afterReady = () => {
+                    try {
+                        if (resumeAt > 1) {
+                            video.currentTime = resumeAt;
+                        }
+                    } catch (e) {}
+                    const playPromise = video.play();
+                    if (playPromise && typeof playPromise.then === 'function') {
+                        playPromise.then(() => this.applyMediaAudio()).catch(() => {
+                            video.muted = true;
+                            video.play().catch(() => {});
+                        });
+                    }
+                };
+
+                if (needsReload) {
+                    this.diag('VIDEO_BUFFER_RECOVER', { resumeAt: resumeAt, rs: video.readyState });
+                    if (window.__humanaTvDiag) {
+                        window.__humanaTvDiag.push(
+                            'VIDEO_BUFFER_RECOVER rs=' + video.readyState + ' →' + resumeAt.toFixed(2)
+                        );
+                    }
+                    const onMeta = () => {
+                        video.removeEventListener('loadedmetadata', onMeta);
+                        afterReady();
+                    };
+                    video.addEventListener('loadedmetadata', onMeta);
+                    try {
+                        video.setAttribute('src', url);
+                        video.src = url;
+                    } catch (e) {
+                        afterReady();
+                    }
+
+                    return;
+                }
+
+                this.restoreVideoPositionIfNeeded(video);
+                afterReady();
             },
             onLocalVideoPlaying(event) {
                 const video = event && event.target;
@@ -585,6 +674,9 @@
                 const video = event && event.target;
                 if (video && video === this.$refs.localVideo) {
                     this.lastVideoTime = video.currentTime || 0;
+                    if ((Math.floor(this.lastVideoTime) % 5) === 0) {
+                        this.persistPlaybackState();
+                    }
                 }
             },
             /**
@@ -698,11 +790,21 @@
                 this.interruptionCount = 0;
                 this.mediaStuck = false;
                 this.stuckSince = 0;
+                const item = this.current;
+                const video = this.$refs.localVideo;
+                // After call audio, Tizen may leave readyState=0 / ended — recover buffer+position.
+                if (item && item.type === 'video' && video && video.isConnected) {
+                    if (video.readyState < 2 || video.ended || (! video.currentSrc && item.url)) {
+                        this.recoverVideoPlayback(item);
+
+                        return;
+                    }
+                }
                 this.continueAfterInterruption();
             },
             restoreVideoPositionIfNeeded(video) {
                 if (! video) {
-                    return;
+                    return false;
                 }
                 const saved = Number(this.lastVideoTime) || 0;
                 const cur = Number(video.currentTime) || 0;
@@ -715,8 +817,16 @@
                                 'VIDEO_SEEK_RESTORE ' + cur.toFixed(2) + '→' + saved.toFixed(2)
                             );
                         }
-                    } catch (e) {}
+
+                        return true;
+                    } catch (e) {
+                        if (window.__humanaTvDiag) {
+                            window.__humanaTvDiag.push('VIDEO_SEEK_FAIL ' + (e && e.message ? e.message : 'seek'));
+                        }
+                    }
                 }
+
+                return false;
             },
             continueAfterInterruption() {
                 const item = this.current;
@@ -729,7 +839,21 @@
                     if (! video || ! video.isConnected) {
                         return;
                     }
-                    if (! video.paused || video.ended) {
+                    // Spurious ended during/after announce: recover instead of no-op.
+                    if (video.ended) {
+                        const saved = Number(this.lastVideoTime) || 0;
+                        if (saved > 1) {
+                            this.recoverVideoPlayback(item);
+                        }
+
+                        return;
+                    }
+                    if (! video.paused) {
+                        return;
+                    }
+                    if (video.readyState < 2) {
+                        this.recoverVideoPlayback(item);
+
                         return;
                     }
                     this.restoreVideoPositionIfNeeded(video);
@@ -910,6 +1034,14 @@
                     return;
                 }
                 if (item.type === 'video') {
+                    // Never hard-reset to t=0 when a call announcement is active or when we
+                    // still have a mid-clip position (Tizen false-ended during ding/TTS).
+                    if (this.announceActive || (Number(this.lastVideoTime) || 0) > 2) {
+                        this.advancing = false;
+                        this.recoverVideoPlayback(item);
+
+                        return;
+                    }
                     const video = this.$refs.localVideo;
                     if (video) {
                         try {
@@ -1178,13 +1310,45 @@
                     }
                 });
             },
+            persistPlaybackState() {
+                try {
+                    window.__humanaTvMediaPersist = {
+                        lastVideoTime: Number(this.lastVideoTime) || 0,
+                        boundVideoItemId: this.boundVideoItemId,
+                        index: this.index,
+                        videoIdentity: this.videoIdentity,
+                        instanceId: this.instanceId,
+                        at: Date.now(),
+                    };
+                } catch (e) {}
+            },
             init() {
                 // Only gate resume around announcements — never mute/load/src on call events.
-                this.diag('PLAYER_INIT', { instanceId: this.instanceId });
+                const prev = (typeof window !== 'undefined' && window.__humanaTvMediaPersist)
+                    ? window.__humanaTvMediaPersist
+                    : null;
+                if (prev && (Number(prev.lastVideoTime) || 0) > 1) {
+                    this.lastVideoTime = Number(prev.lastVideoTime) || 0;
+                    if (prev.boundVideoItemId != null) {
+                        this.boundVideoItemId = prev.boundVideoItemId;
+                    }
+                    if (Number.isInteger(prev.index)) {
+                        this.index = prev.index;
+                    }
+                }
+                this.diag('PLAYER_INIT', {
+                    instanceId: this.instanceId,
+                    restoredT: this.lastVideoTime,
+                    prevInstance: prev ? prev.instanceId : null,
+                });
                 if (typeof window !== 'undefined') {
                     window.__humanaTvMediaPlayer = this;
                     if (window.__humanaTvDiag) {
-                        window.__humanaTvDiag.push('PLAYER_INIT ' + this.instanceId);
+                        window.__humanaTvDiag.push(
+                            'PLAYER_INIT ' + this.instanceId
+                            + ' restoredT=' + (Number(this.lastVideoTime) || 0).toFixed(2)
+                            + (prev && prev.instanceId && prev.instanceId !== this.instanceId ? ' REMOUNT' : '')
+                        );
                     }
                 }
                 this._onAnnounceBegin = (event) => {
@@ -1197,12 +1361,14 @@
                     }
                     this.announceActive = true;
                     this.clearInterruptionTimer();
+                    this.persistPlaybackState();
                     const callId = event && event.detail ? event.detail.callId : null;
                     if (window.__humanaTvDiag) {
                         window.__humanaTvDiag.push(
                             'ANNOUNCE_BEGIN hold call=' + (callId != null ? callId : '-')
                             + ' t=' + (Number(this.lastVideoTime) || 0).toFixed(2)
                             + ' id=' + (this.videoIdentity || '-')
+                            + ' src=' + (video && video.currentSrc ? String(video.currentSrc).slice(-36) : '-')
                         );
                     }
                 };
@@ -1220,9 +1386,29 @@
                 window.addEventListener('tv-call-audio-begin', this._onAnnounceBegin);
                 window.addEventListener('tv-call-audio-end', this._onAnnounceEnd);
                 this.startPauseWatchdog();
-                this.$nextTick(() => this.activateCurrent());
+                this.$nextTick(() => {
+                    const video = this.$refs.localVideo;
+                    const item = this.current;
+                    // Remount mid-playback: recover position instead of rebinding from t=0.
+                    if (
+                        item
+                        && item.type === 'video'
+                        && (Number(this.lastVideoTime) || 0) > 1
+                        && video
+                        && prev
+                        && prev.instanceId
+                        && prev.instanceId !== this.instanceId
+                    ) {
+                        this.boundVideoItemId = item.id;
+                        this.recoverVideoPlayback(item);
+
+                        return;
+                    }
+                    this.activateCurrent();
+                });
             },
             destroy() {
+                this.persistPlaybackState();
                 this.stopPauseWatchdog();
                 this.clearInterruptionTimer();
                 this.clearMediaTimers();

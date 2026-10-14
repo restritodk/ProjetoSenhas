@@ -30,7 +30,7 @@
     $tvDiagEnabled = $tvAudioDebug
         || request()->boolean($diagQuery)
         || request()->query($diagQuery) === '1';
-    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v5-split-audio'), 0, 10);
+    $tvBuildStamp = 'tv-'.substr(hash('sha1', $effectVersion.'|samsung-v6-recall-media'), 0, 10);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -47,7 +47,7 @@
 @endphp
 <div
     id="tv-shell-root"
-    data-tv-build-family="samsung-v5-split-audio"
+    data-tv-build-family="samsung-v6-recall-media"
     data-tv-build="{{ $tvBuildStamp }}"
     wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
     class="tv-shell relative flex flex-col overflow-hidden"
@@ -1092,6 +1092,30 @@
                 }
 
                 panel.queue.push(payload);
+                // Prefetch Google TTS as soon as the call is known (before/during effect).
+                const earlyUrl = payload.audioUrl || payload.audio_url || null;
+                if (earlyUrl && panel.clinicSpeechEnabled !== false) {
+                    const callKey = callId != null ? String(callId) : earlyUrl;
+                    if (! panel._ttsPrefetchByCall) {
+                        panel._ttsPrefetchByCall = Object.create(null);
+                    }
+                    if (! panel._ttsPrefetchByCall[callKey]) {
+                        this.log('TTS_PREFETCH_EARLY', callKey);
+                        panel._ttsPrefetchByCall[callKey] = this.fetchTtsBlob(earlyUrl).then((blob) => {
+                            this.revokeTtsBlob(panel);
+                            panel.ttsBlobUrl = URL.createObjectURL(blob);
+                            this.log('TTS_PREFETCH_EARLY_READY', { callId: callId, bytes: blob.size });
+
+                            return panel.ttsBlobUrl;
+                        }).catch((err) => {
+                            delete panel._ttsPrefetchByCall[callKey];
+                            this.warn('TTS_PREFETCH_EARLY_FAIL', err && err.message ? err.message : err);
+
+                            return null;
+                        });
+                    }
+                    payload._ttsPrefetch = panel._ttsPrefetchByCall[callKey];
+                }
                 if (!panel._draining) {
                     this.playNext(token);
                 }
@@ -1210,6 +1234,7 @@
                     this.playSmartTvSequence(panel, {
                         effectUrl: panel.clinicChimeEnabled ? (panel.effectUrl || DEFAULT_EFFECT_URL) : null,
                         ttsUrl: (panel.clinicSpeechEnabled && panel.soundEnabled) ? audioUrl : null,
+                        ttsPrefetch: payload._ttsPrefetch || null,
                         isCurrentItem: isCurrentItem,
                     }, finish);
 
@@ -1282,9 +1307,9 @@
 
                 const effectUrl = options.effectUrl || null;
                 const ttsUrl = options.ttsUrl || null;
-                let ttsPrefetch = null;
+                let ttsPrefetch = options.ttsPrefetch || null;
 
-                if (ttsUrl) {
+                if (ttsUrl && ! ttsPrefetch) {
                     this.markPhase(panel, 'TTS_PREFETCH', ttsUrl);
                     ttsPrefetch = this.fetchTtsBlob(ttsUrl).then((blob) => {
                         this.revokeTtsBlob(panel);
@@ -1298,6 +1323,8 @@
 
                         return null;
                     });
+                } else if (ttsPrefetch) {
+                    this.markPhase(panel, 'TTS_PREFETCH', 'early');
                 }
 
                 const afterEffect = () => {
@@ -1412,7 +1439,9 @@
              * Wait for Google TTS cache (warm via defer) with short backoff — not multi-second sleeps.
              */
             async fetchTtsBlob(url) {
-                const waits = [0, 200, 400, 700, 1100];
+                // Short backoffs: warm runs via defer on the attendant request; long sleeps
+                // were stacking into multi-second TTS delay on the TV.
+                const waits = [0, 150, 300, 500, 800];
                 let lastErr = 'tts-unknown';
                 for (let i = 0; i < waits.length; i++) {
                     if (waits[i] > 0) {
@@ -1674,6 +1703,54 @@
                 tryOnce();
             },
 
+            /**
+             * After the first ding, Tizen leaves the effect element in `ended`.
+             * Seeking to 0 alone often fails to restart; re-pinning the same MP3 clears that state.
+             */
+            prepareEffectElementForReplay(panel, audio) {
+                const url = panel.effectUrl || DEFAULT_EFFECT_URL;
+                const duration = Number(audio.duration);
+                const nearEnd = isFinite(duration) && duration > 0
+                    && Number(audio.currentTime) >= (duration - 0.08);
+                const needsRepin = !! audio.ended || nearEnd || audio.readyState < 2;
+
+                this.log('EFFECT_REPLAY_PREP', {
+                    ended: !! audio.ended,
+                    nearEnd: nearEnd,
+                    rs: audio.readyState,
+                    ct: Number(audio.currentTime || 0).toFixed(2),
+                    repin: needsRepin,
+                });
+
+                try {
+                    audio.pause();
+                } catch (e) {}
+
+                if (needsRepin) {
+                    try {
+                        audio.setAttribute('src', url);
+                        audio.src = url;
+                    } catch (e) {}
+
+                    return true;
+                }
+
+                try {
+                    if (audio.readyState >= 1) {
+                        audio.currentTime = 0;
+                    }
+                } catch (e) {
+                    try {
+                        audio.setAttribute('src', url);
+                        audio.src = url;
+                    } catch (err) {}
+
+                    return true;
+                }
+
+                return false;
+            },
+
             playSmartTvEffect(panel, onEnd) {
                 const safeEnd = () => {
                     panel.speaking = false;
@@ -1702,7 +1779,7 @@
 
                 let audio;
                 try {
-                    audio = this.ensureSmartTvEffect(panel);
+                    audio = this.ensureEffectSrcPinned(panel);
                 } catch (e) {
                     this.warn('effect error', 'ensure');
                     fallbackNewEffect();
@@ -1728,6 +1805,7 @@
                     try {
                         audio.onended = null;
                         audio.onerror = null;
+                        audio.onplaying = null;
                     } catch (e) {}
                     if (reason === 'timeout') {
                         this.warn('EFFECT_ENDED', 'timeout');
@@ -1766,18 +1844,16 @@
                     try {
                         audio.onended = () => done('ended');
                         audio.onerror = () => done('error');
+                        audio.onplaying = () => {
+                            panel.effectUnlocked = true;
+                            panel.lastEffectPath = 'html-audio';
+                            this.log('EFFECT_PLAYING', {
+                                ct: Number(audio.currentTime || 0).toFixed(2),
+                                rs: audio.readyState,
+                            });
+                            armClipWatchdog();
+                        };
                         armClipWatchdog();
-                        try {
-                            if (typeof audio.paused === 'boolean' && !audio.paused) {
-                                audio.pause();
-                            }
-                        } catch (e) {}
-                        try {
-                            // Seek without load() — load() after unlock breaks Samsung autoplay grant.
-                            if (audio.readyState >= 1) {
-                                audio.currentTime = 0;
-                            }
-                        } catch (e) {}
                         this.log('EFFECT_PLAY_RESOLVED', 'play() invoked');
                         const playPromise = audio.play();
                         if (playPromise && typeof playPromise.then === 'function') {
@@ -1787,7 +1863,11 @@
                                 this.log('EFFECT_PLAY_RESOLVED', 'playing');
                                 armClipWatchdog();
                             }).catch((err) => {
-                                this.warn('AUDIO_PLAY_REJECTED', err && err.message ? err.message : err);
+                                const msg = err && err.name
+                                    ? (err.name + ':' + (err.message || ''))
+                                    : String(err || 'play-reject');
+                                panel.lastPlayError = msg;
+                                this.warn('AUDIO_PLAY_REJECTED', msg);
                                 // On Smart TV, try decoded NEW mp3 before declaring autoplay blocked.
                                 if (panel.isSmartTv || this.isSmartTvBrowser() || panel.effectBuffer) {
                                     done('error');
@@ -1804,25 +1884,37 @@
                     }
                 };
 
-                // Do not call audio.load() here — it resets the element and can void the
-                // unmuted unlock from "Ativar som" on Tizen/Samsung browsers.
-                if (audio.readyState >= 2) {
-                    startPlay();
+                const waitThenPlay = () => {
+                    if (audio.readyState >= 2) {
+                        startPlay();
+
+                        return;
+                    }
+                    const onReady = () => {
+                        audio.removeEventListener('canplay', onReady);
+                        audio.removeEventListener('loadeddata', onReady);
+                        startPlay();
+                    };
+                    audio.addEventListener('canplay', onReady);
+                    audio.addEventListener('loadeddata', onReady);
+                    setTimeout(() => {
+                        if (! settled && ! started) {
+                            startPlay();
+                        }
+                    }, 1500);
+                };
+
+                // Do not call audio.load() here — it voids the Samsung unmuted unlock.
+                // Recall path: clear Tizen `ended` by re-pinning efeitoSonoroNovo (not load()).
+                const repinned = this.prepareEffectElementForReplay(panel, audio);
+                if (repinned) {
+                    waitThenPlay();
+
                     return;
                 }
 
-                const onReady = () => {
-                    audio.removeEventListener('canplay', onReady);
-                    audio.removeEventListener('loadeddata', onReady);
-                    startPlay();
-                };
-                audio.addEventListener('canplay', onReady);
-                audio.addEventListener('loadeddata', onReady);
-                setTimeout(() => {
-                    if (!settled) {
-                        startPlay();
-                    }
-                }, 1500);
+                // First play / mid-clip: seek without load() to keep Samsung unlock.
+                waitThenPlay();
             },
 
             async playChime(panel) {

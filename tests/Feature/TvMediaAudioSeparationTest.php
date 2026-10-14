@@ -44,7 +44,10 @@ class TvMediaAudioSeparationTest extends TestCase
             ->assertOk()
             ->getContent();
 
-        $this->assertStringContainsString('data-tv-build-family="samsung-v5-split-audio"', $html);
+        $this->assertStringContainsString('data-tv-build-family="samsung-v6-recall-media"', $html);
+        $this->assertStringContainsString('prepareEffectElementForReplay', $html);
+        $this->assertStringContainsString('EFFECT_REPLAY_PREP', $html);
+        $this->assertStringContainsString('TTS_PREFETCH_EARLY', $html);
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('data-tv-call-speech', $html);
         $this->assertStringContainsString('ensureEffectSrcPinned', $html);
@@ -65,9 +68,14 @@ class TvMediaAudioSeparationTest extends TestCase
 
         $this->assertStringContainsString('VIDEO_SEEK_RESTORE', $html);
         $this->assertStringContainsString('restoreVideoPositionIfNeeded', $html);
+        $this->assertStringContainsString('recoverVideoPlayback', $html);
+        $this->assertStringContainsString('VIDEO_ENDED_IGNORED_DURING_ANNOUNCE', $html);
+        $this->assertStringContainsString('restartSingleItem', $html);
+        $this->assertStringContainsString('Never hard-reset to t=0 when a call announcement is active', $html);
         $this->assertStringContainsString('lastVideoTime', $html);
         $this->assertStringContainsString('ANNOUNCE_BEGIN hold', $html);
         $this->assertStringContainsString('onLocalVideoEmptied', $html);
+        $this->assertStringContainsString('__humanaTvMediaPersist', $html);
         $this->assertStringContainsString('Do NOT rebind src / activateCurrent here', $html);
         $this->assertStringContainsString('Never rebind the same playlist item just because readyState dropped', $html);
         $this->assertStringNotContainsString('location.reload', $html);
