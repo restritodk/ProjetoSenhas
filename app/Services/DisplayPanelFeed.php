@@ -8,6 +8,7 @@ use App\Services\TvTts\TvTtsService;
 use App\Support\ClinicSettingCatalog;
 use App\Support\LogoSurface;
 use App\Support\TvPresentation;
+use App\TicketStatus;
 use Illuminate\Support\Collection;
 
 class DisplayPanelFeed
@@ -45,6 +46,60 @@ class DisplayPanelFeed
                     ->orWhere('public_token', $identifier);
             })
             ->first();
+    }
+
+    /**
+     * Minimal public snapshot for sub-second call detection on the TV.
+     * Never includes personal user data, announcements, or audio URLs.
+     *
+     * @return array<string, mixed>
+     */
+    public function watchSnapshot(DisplayPanel $panel): array
+    {
+        $panel->loadMissing([
+            'clinic:id,name,active',
+            'unit:id,clinic_id,name,active',
+            'sectors:id,clinic_id,unit_id,name,active',
+        ]);
+
+        $empty = [
+            'enabled' => true,
+            'cursor' => 0,
+            'ticket_id' => null,
+            'ticket_status' => null,
+            'display_code' => null,
+            'desk_name' => null,
+            'ticket_type_name' => null,
+            'call_type' => null,
+            'called_at' => null,
+            'correlation' => 'none',
+        ];
+
+        if (! $panel->isOperationallyAvailable() || $panel->clinic === null || $panel->unit === null) {
+            return $empty;
+        }
+
+        $call = $this->recentCalls($panel, 1)->first();
+
+        if ($call === null) {
+            return $empty;
+        }
+
+        $status = $call->ticket?->status;
+        $statusValue = $status instanceof TicketStatus ? $status->value : null;
+
+        return [
+            'enabled' => true,
+            'cursor' => (int) $call->id,
+            'ticket_id' => $call->ticket_id !== null ? (int) $call->ticket_id : null,
+            'ticket_status' => $statusValue,
+            'display_code' => $call->ticket?->display_code ?? '—',
+            'desk_name' => $call->desk?->name ?? 'Mesa',
+            'ticket_type_name' => $call->ticket?->ticketType?->name ?? 'Senha',
+            'call_type' => $call->call_type->value,
+            'called_at' => $call->called_at?->timezone(config('app.timezone'))->format('H:i') ?? '',
+            'correlation' => 'tc-'.$call->id,
+        ];
     }
 
     /**
@@ -172,8 +227,11 @@ class DisplayPanelFeed
         bool $speakType,
         bool $speakDesk,
     ): array {
+        $ticketStatus = $call->ticket?->status;
         $payload = [
             'id' => $call->id,
+            'ticket_id' => $call->ticket_id !== null ? (int) $call->ticket_id : null,
+            'ticket_status' => $ticketStatus instanceof TicketStatus ? $ticketStatus->value : null,
             'display_code' => $call->ticket?->display_code ?? '—',
             'ticket_type_name' => $call->ticket?->ticketType?->name ?? 'Senha',
             'ticket_type_prefix' => $call->ticket?->ticketType?->prefix ?? '—',
@@ -181,6 +239,7 @@ class DisplayPanelFeed
             'called_at' => $call->called_at?->timezone(config('app.timezone'))->format('H:i') ?? '',
             'call_type' => $call->call_type->value,
             'call_type_label' => $call->call_type->label(),
+            'correlation' => 'tc-'.$call->id,
         ];
 
         if ($includeAnnouncement) {

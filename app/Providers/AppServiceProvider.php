@@ -59,6 +59,13 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(120)->by($request->ip());
         });
 
+        // Fast watch (~400ms): headroom for a few panels per IP without brute-force of tokens.
+        RateLimiter::for('tv-watch', function (Request $request): Limit {
+            $token = (string) $request->route('publicToken');
+
+            return Limit::perMinute(240)->by($request->ip().'|'.$token);
+        });
+
         RateLimiter::for('tv-tts', function (Request $request): Limit {
             return Limit::perMinute(60)->by($request->ip());
         });

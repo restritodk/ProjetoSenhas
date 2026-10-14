@@ -4,10 +4,8 @@ namespace App\Actions;
 
 use App\Models\Desk;
 use App\Models\Sector;
-use App\Models\Ticket;
 use App\Models\Unit;
 use App\Models\User;
-use App\TicketStatus;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -29,8 +27,17 @@ class UpdateDesk
         }
         $sector = $this->sectorForUnit($actor, $unit, (int) $sectorId);
 
+        $structureChanges = (int) $desk->unit_id !== (int) $unit->id
+            || (int) ($desk->sector_id ?? 0) !== (int) $sector->id;
+
+        if ($structureChanges && $desk->hasOpenAttendance()) {
+            throw ValidationException::withMessages([
+                'unitId' => 'Esta mesa possui um atendimento em andamento. Finalize o atendimento antes de alterar sua unidade ou setor.',
+            ]);
+        }
+
         if ($desk->active && $attributes['active'] === false) {
-            $this->assertNoWaitingTargetedTickets($desk);
+            $this->assertDeskCanBeDeactivated($desk);
         }
 
         $desk->forceFill([
@@ -45,17 +52,17 @@ class UpdateDesk
         return $desk->refresh();
     }
 
-    private function assertNoWaitingTargetedTickets(Desk $desk): void
+    private function assertDeskCanBeDeactivated(Desk $desk): void
     {
-        $hasTargeted = Ticket::query()
-            ->where('clinic_id', $desk->clinic_id)
-            ->where('target_desk_id', $desk->id)
-            ->where('status', TicketStatus::WAITING)
-            ->exists();
-
-        if ($hasTargeted) {
+        if ($desk->hasWaitingTargetedTickets()) {
             throw ValidationException::withMessages([
                 'active' => 'Não é possível desativar a mesa enquanto houver senhas aguardando direcionadas a ela.',
+            ]);
+        }
+
+        if ($desk->hasOpenAttendance()) {
+            throw ValidationException::withMessages([
+                'active' => 'Não é possível desativar a mesa enquanto houver um atendimento em andamento. Finalize ou transfira o atendimento antes de desativar.',
             ]);
         }
     }

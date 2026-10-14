@@ -19,6 +19,7 @@ use App\Services\OperationalContext;
 use App\TicketCallType;
 use App\UserRole;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -161,7 +162,9 @@ class TvPanelTest extends TestCase
             ->assertSee('Mesa 04')
             ->tap(function () use ($attendant, $called): void {
                 $this->actingAs($attendant);
+                Carbon::setTestNow(now()->addSeconds((int) config('tv_realtime.recall_cooldown_seconds', 3) + 1));
                 app(RecallTicket::class)->handle($attendant, $called);
+                Carbon::setTestNow();
             })
             ->call('refreshFeed')
             ->assertDispatched('tv-new-call');

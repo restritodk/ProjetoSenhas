@@ -285,7 +285,7 @@
                             type="button"
                             wire:click="recall"
                             wire:loading.attr="disabled"
-                            wire:target="recall"
+                            wire:target="recall,startService,callNext,complete"
                             @disabled($current === null || $current->status !== \App\TicketStatus::CALLED)
                             class="inline-flex min-h-14 cursor-pointer items-center justify-center rounded-2xl bg-warning px-5 text-base font-semibold text-white transition duration-200 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -298,7 +298,7 @@
                             type="button"
                             wire:click="startService"
                             wire:loading.attr="disabled"
-                            wire:target="startService"
+                            wire:target="startService,recall,callNext,complete"
                             @disabled($current === null || $current->status !== \App\TicketStatus::CALLED)
                             class="inline-flex min-h-14 cursor-pointer items-center justify-center rounded-2xl bg-accent px-5 text-base font-semibold text-white transition duration-200 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >

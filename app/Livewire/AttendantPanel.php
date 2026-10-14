@@ -37,6 +37,8 @@ class AttendantPanel extends Component
 
     public string $errorMessage = '';
 
+    public bool $actionBusy = false;
+
     public bool $showTransferModal = false;
 
     public bool $showNoShowModal = false;
@@ -153,9 +155,15 @@ class AttendantPanel extends Component
 
     public function recall(RecallTicket $recallTicket): void
     {
+        if ($this->actionBusy) {
+            return;
+        }
+
         $ticket = $this->currentTicket;
         abort_if($ticket === null, 404);
         $this->authorize('recall', $ticket);
+
+        $this->actionBusy = true;
 
         try {
             $recallTicket->handle(auth()->user(), $ticket);
@@ -164,6 +172,8 @@ class AttendantPanel extends Component
         } catch (ValidationException $exception) {
             $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Não foi possível rechamar.';
             $this->statusMessage = '';
+        } finally {
+            $this->actionBusy = false;
         }
 
         $this->forgetComputed();
@@ -171,9 +181,15 @@ class AttendantPanel extends Component
 
     public function startService(StartTicketService $startTicketService): void
     {
+        if ($this->actionBusy) {
+            return;
+        }
+
         $ticket = $this->currentTicket;
         abort_if($ticket === null, 404);
         $this->authorize('startService', $ticket);
+
+        $this->actionBusy = true;
 
         try {
             $startTicketService->handle(auth()->user(), $ticket);
@@ -182,6 +198,8 @@ class AttendantPanel extends Component
         } catch (ValidationException $exception) {
             $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Não foi possível iniciar o atendimento.';
             $this->statusMessage = '';
+        } finally {
+            $this->actionBusy = false;
         }
 
         $this->forgetComputed();

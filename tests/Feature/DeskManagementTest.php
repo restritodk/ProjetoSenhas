@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Actions\CreateDesk;
+use App\Actions\EnsureDefaultSectorForUnit;
 use App\Livewire\DesksManager;
 use App\Models\Clinic;
 use App\Models\Desk;
+use App\Models\Sector;
 use App\Models\Unit;
 use App\Models\User;
 use App\UserRole;
@@ -65,6 +67,7 @@ class DeskManagementTest extends TestCase
         $admin = $this->administrator($clinicA);
         $unitA = Unit::factory()->for($clinicA)->create(['name' => 'Recepção A']);
         $unitB = Unit::factory()->for($clinicB)->create(['name' => 'Recepção B']);
+        $sectorA = $this->sectorFor($unitA);
 
         Livewire::actingAs($admin)
             ->test(DesksManager::class)
@@ -72,10 +75,13 @@ class DeskManagementTest extends TestCase
             ->set('name', 'Mesa 01')
             ->set('code', 'm01')
             ->set('unitId', $unitA->id)
+            ->set('sectorId', $sectorA->id)
             ->set('active', true)
             ->call('save')
             ->assertHasNoErrors()
-            ->assertSee('Mesa/guichê criado com sucesso.');
+            ->assertSet('showCreateConfirmation', true)
+            ->call('confirmCreate')
+            ->assertSee('Mesa criada!');
 
         $this->assertDatabaseHas('desks', [
             'clinic_id' => $clinicA->id,
@@ -114,6 +120,8 @@ class DeskManagementTest extends TestCase
         $admin = $this->administrator($clinic);
         $unitA = Unit::factory()->for($clinic)->create();
         $unitB = Unit::factory()->for($clinic)->create();
+        $sectorA = $this->sectorFor($unitA);
+        $sectorB = $this->sectorFor($unitB);
 
         Desk::factory()->create([
             'clinic_id' => $clinic->id,
@@ -128,6 +136,7 @@ class DeskManagementTest extends TestCase
             ->set('name', 'Outra Mesa')
             ->set('code', 'M01')
             ->set('unitId', $unitA->id)
+            ->set('sectorId', $sectorA->id)
             ->call('save')
             ->assertHasErrors(['code']);
 
@@ -137,8 +146,10 @@ class DeskManagementTest extends TestCase
             ->set('name', 'Mesa Unidade B')
             ->set('code', 'M01')
             ->set('unitId', $unitB->id)
+            ->set('sectorId', $sectorB->id)
             ->call('save')
-            ->assertHasNoErrors();
+            ->assertHasNoErrors()
+            ->call('confirmCreate');
 
         $this->assertSame(2, Desk::query()->where('code', 'M01')->count());
         $this->assertDatabaseHas('desks', [
@@ -199,6 +210,7 @@ class DeskManagementTest extends TestCase
         $admin = $this->administrator($clinic);
         $unitA = Unit::factory()->for($clinic)->create(['name' => 'Recepção']);
         $unitB = Unit::factory()->for($clinic)->create(['name' => 'Triagem']);
+        $sectorB = $this->sectorFor($unitB);
         $desk = Desk::factory()->create([
             'clinic_id' => $clinic->id,
             'unit_id' => $unitA->id,
@@ -212,9 +224,12 @@ class DeskManagementTest extends TestCase
             ->set('name', 'Guichê 01')
             ->set('code', 'G01')
             ->set('unitId', $unitB->id)
+            ->set('sectorId', $sectorB->id)
             ->call('save')
             ->assertHasNoErrors()
-            ->assertSee('Mesa/guichê atualizado com sucesso.');
+            ->assertSet('showEditConfirmation', true)
+            ->call('confirmUpdate')
+            ->assertSee('Alterações salvas!');
 
         $this->assertDatabaseHas('desks', [
             'id' => $desk->id,
@@ -228,14 +243,14 @@ class DeskManagementTest extends TestCase
             ->test(DesksManager::class)
             ->call('confirmDeactivation', $desk->id)
             ->call('deactivate')
-            ->assertSee('Mesa/guichê desativado.');
+            ->assertSee('Mesa desativada!');
 
         $this->assertFalse($desk->fresh()->active);
 
         Livewire::actingAs($admin)
             ->test(DesksManager::class)
             ->call('activate', $desk->id)
-            ->assertSee('Mesa/guichê ativado.');
+            ->assertSee('Mesa ativada!');
 
         $this->assertTrue($desk->fresh()->active);
     }
@@ -267,6 +282,11 @@ class DeskManagementTest extends TestCase
             'supervisor' => [UserRole::SUPERVISOR],
             'attendant' => [UserRole::ATTENDANT],
         ];
+    }
+
+    private function sectorFor(Unit $unit): Sector
+    {
+        return app(EnsureDefaultSectorForUnit::class)->handle($unit);
     }
 
     private function administrator(?Clinic $clinic = null): User

@@ -46,6 +46,8 @@ class RecallTicket
                 ]);
             }
 
+            $this->assertRecallCooldown($locked);
+
             $calledAt = now(config('app.timezone'));
 
             $locked->forceFill([
@@ -68,5 +70,33 @@ class RecallTicket
 
             return $locked->refresh()->load(['ticketType', 'currentDesk']);
         });
+    }
+
+    /**
+     * Atomic cooldown: the ticket row is already locked for update, so concurrent
+     * tabs serialize here and only one RECALL within the window is accepted.
+     */
+    private function assertRecallCooldown(Ticket $locked): void
+    {
+        $cooldown = max(1, (int) config('tv_realtime.recall_cooldown_seconds', 3));
+
+        $latestRecall = TicketCall::query()
+            ->where('ticket_id', $locked->id)
+            ->where('clinic_id', $locked->clinic_id)
+            ->where('call_type', TicketCallType::RECALL)
+            ->orderByDesc('id')
+            ->first();
+
+        if ($latestRecall === null || $latestRecall->called_at === null) {
+            return;
+        }
+
+        $threshold = now(config('app.timezone'))->subSeconds($cooldown);
+
+        if ($latestRecall->called_at->greaterThan($threshold)) {
+            throw ValidationException::withMessages([
+                'ticket' => 'Aguarde alguns segundos antes de rechamar novamente.',
+            ]);
+        }
     }
 }

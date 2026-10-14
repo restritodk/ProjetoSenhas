@@ -42,7 +42,7 @@ class TvSmartTvCallEffectTest extends TestCase
             ->assertOk()
             ->getContent();
 
-        $this->assertStringContainsString('EfeitoSonoroTV.mp3', $html);
+        $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('<audio', $html);
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('preload="auto"', $html);
@@ -80,7 +80,7 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('SpeechSynthesisUtterance', $html);
         // Desktop keeps the preload element but announce must not select the Smart TV branch.
         $this->assertStringContainsString('smart-tv effect selected', $html);
-        $this->assertStringContainsString('/sond/EfeitoSonoroTV.mp3', $html);
+        $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('Do not call audio.load() here', $html);
     }
 
@@ -202,13 +202,13 @@ class TvSmartTvCallEffectTest extends TestCase
 
     public function test_effect_file_is_present_in_public_sond(): void
     {
-        $this->assertFileExists(public_path('sond/EfeitoSonoroTV.mp3'));
-        $this->assertGreaterThan(1000, filesize(public_path('sond/EfeitoSonoroTV.mp3')));
+        $this->assertFileExists(public_path('sond/efeitoSonoroNovo.mp3'));
+        $this->assertGreaterThan(1000, filesize(public_path('sond/efeitoSonoroNovo.mp3')));
     }
 
     public function test_effect_mp3_is_served_as_audio_mpeg(): void
     {
-        $path = public_path('sond/EfeitoSonoroTV.mp3');
+        $path = public_path('sond/efeitoSonoroNovo.mp3');
         $this->assertFileExists($path);
 
         $response = $this->get(route('tv.call-effect'));

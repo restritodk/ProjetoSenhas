@@ -419,7 +419,7 @@ class SectorStructureTest extends TestCase
             ->get(route('sectors.index'))
             ->assertOk()
             ->assertSee('Setores')
-            ->assertSee('Organize as áreas de atendimento de cada unidade.')
+            ->assertSee('Organize e gerencie as áreas de atendimento das suas unidades.')
             ->assertSee('Novo setor');
     }
 
@@ -478,6 +478,9 @@ class SectorStructureTest extends TestCase
             ->set('description', 'Atendimento da recepção')
             ->set('active', true)
             ->call('save')
+            ->assertSet('showCreateConfirmation', true)
+            ->assertHasNoErrors()
+            ->call('confirmCreate')
             ->assertHasNoErrors()
             ->assertSee('Recepção')
             ->assertSee('REC')

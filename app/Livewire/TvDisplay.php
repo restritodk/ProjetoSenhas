@@ -84,11 +84,18 @@ class TvDisplay extends Component
 
                 foreach ($pending as $call) {
                     $callId = (int) $call['id'];
+                    $ticketId = isset($call['ticket_id']) ? (int) $call['ticket_id'] : null;
+                    $ticketStatus = isset($call['ticket_status']) && is_string($call['ticket_status'])
+                        ? $call['ticket_status']
+                        : null;
                     $announcement = (string) ($call['announcement'] ?? '');
                     $displayCode = (string) ($call['display_code'] ?? '');
                     $audioUrl = isset($call['audio_url']) && is_string($call['audio_url'])
                         ? $call['audio_url']
                         : null;
+                    $correlation = isset($call['correlation']) && is_string($call['correlation'])
+                        ? $call['correlation']
+                        : 'tc-'.$callId;
 
                     $this->dispatch(
                         'tv-new-call',
@@ -101,9 +108,12 @@ class TvDisplay extends Component
                     $batch[] = [
                         'panelToken' => $this->publicToken,
                         'callId' => $callId,
+                        'ticketId' => $ticketId,
+                        'ticketStatus' => $ticketStatus,
                         'announcement' => $announcement,
                         'displayCode' => $displayCode,
                         'audioUrl' => $audioUrl,
+                        'correlation' => $correlation,
                     ];
                 }
 
@@ -117,6 +127,8 @@ class TvDisplay extends Component
             } else {
                 $this->highlight = false;
             }
+
+            $this->dropStaleAnnouncementsForCurrentCall($newCall);
 
             $this->currentCall = $newCall;
             if (! $announce && $newCallId === null && $this->lastAnnouncedCallId === null) {
@@ -169,5 +181,34 @@ class TvDisplay extends Component
         ksort($byId);
 
         return array_values($byId);
+    }
+
+    /**
+     * When the ticket leaves CALLED (start service / finish / no-show), drop queued
+     * announcements for that ticket. The clip already playing is left alone.
+     *
+     * @param  array<string, mixed>|null  $currentCall
+     */
+    private function dropStaleAnnouncementsForCurrentCall(?array $currentCall): void
+    {
+        if ($currentCall === null) {
+            return;
+        }
+
+        $ticketId = isset($currentCall['ticket_id']) ? (int) $currentCall['ticket_id'] : 0;
+        $status = isset($currentCall['ticket_status']) && is_string($currentCall['ticket_status'])
+            ? $currentCall['ticket_status']
+            : null;
+
+        if ($ticketId <= 0 || $status === null || $status === 'called') {
+            return;
+        }
+
+        $this->js(
+            'window.__humanaTvCallAudio && window.__humanaTvCallAudio.invalidateTicket('
+            .json_encode($this->publicToken, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT)
+            .', '.$ticketId
+            .')'
+        );
     }
 }

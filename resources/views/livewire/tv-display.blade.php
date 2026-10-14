@@ -21,8 +21,11 @@
     $logoSurfaceCss = \App\Support\LogoSurface::cssBackground($logoBackground, $logoBackgroundColor);
     $isSmartTv = \App\Support\SmartTvBrowser::matches(request()->userAgent());
     // Relative URL — absolute asset(APP_URL) breaks when the TV opens the panel by IP/host mismatch.
-    $smartTvEffectUrl = '/sond/EfeitoSonoroTV.mp3';
+    $smartTvEffectUrl = '/sond/efeitoSonoroNovo.mp3';
     $tvAudioDebug = (bool) config('app.debug');
+    $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
+    $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
+    $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
     // Classic sRGB gradient (no "in oklab"). Tailwind v4's bg-gradient-to-r emits
     // `to right in oklab`, which Samsung Smart TV browsers treat as invalid and drop.
     // Start stop matches design-system --color-success (#15803d); via/to come from clinic branding.
@@ -35,7 +38,7 @@
     );
 @endphp
 <div
-    wire:poll.3s="refreshFeed"
+    wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
     class="tv-shell flex flex-col overflow-hidden"
     style="--color-primary: {{ $primaryColor }}; --color-accent: {{ $accentColor }}; --color-primary-dark: {{ $primaryColor }}; --color-primary-light: {{ $primaryColor }};"
     x-data="tvAudioUi(@js([
@@ -46,6 +49,13 @@
         'isSmartTv' => $isSmartTv,
         'effectUrl' => $smartTvEffectUrl,
         'audioDebug' => $tvAudioDebug,
+        'fastWatchEnabled' => $fastWatchEnabled,
+        'fastWatchIntervalMs' => $fastWatchIntervalMs,
+        'watchUrl' => '/painel/'.$publicToken.'/watch',
+        'serverCursor' => (int) ($currentCall['id'] ?? 0),
+        'serverDisplayCode' => (string) ($currentCall['display_code'] ?? ''),
+        'serverDeskName' => (string) ($currentCall['desk_name'] ?? ''),
+        'serverTicketTypeName' => (string) ($currentCall['ticket_type_name'] ?? ''),
     ]))"
 >
     {{-- Stable audio host (wire:ignore). Audio is visually hidden but NOT display:none —
@@ -223,9 +233,10 @@
 
             {{-- CALLS COLUMN --}}
             <aside class="flex min-h-0 flex-col gap-[var(--tv-gap)] max-md:contents md:order-none">
-                {{-- CURRENT CALL --}}
+                {{-- CURRENT CALL — server HTML for Livewire; Alpine overlays fast-watch text. --}}
                 <section
                     class="flex min-h-0 flex-col overflow-hidden rounded-xl border-2 border-primary bg-surface max-md:order-1 sm:rounded-2xl sm:border-[3px] md:flex-[1.55] {{ $highlight ? 'tv-highlight' : '' }}"
+                    :class="fastHighlight ? 'tv-highlight' : ''"
                     wire:key="current-call-{{ $currentCall['id'] ?? 'none' }}"
                 >
                     <div class="shrink-0 bg-primary px-3 py-1.5 text-center sm:px-4 sm:py-2.5 md:py-3">
@@ -234,22 +245,36 @@
 
                     <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-2 py-2 text-center sm:gap-2.5 sm:px-4 sm:py-4 md:gap-3 md:px-5 md:py-5">
                         @if ($currentCall)
-                            <p class="tv-code {{ $highlight ? 'tv-code-pulse' : '' }} w-full shrink-0 font-bold tracking-tight text-danger">
-                                {{ $currentCall['display_code'] }}
-                            </p>
+                            <p
+                                class="tv-code {{ $highlight ? 'tv-code-pulse' : '' }} w-full shrink-0 font-bold tracking-tight text-danger"
+                                :class="fastHighlight ? 'tv-code-pulse' : ''"
+                                x-text="visibleDisplayCode() || {{ \Illuminate\Support\Js::from($currentCall['display_code']) }}"
+                            >{{ $currentCall['display_code'] }}</p>
                             <div class="h-0.5 w-16 shrink-0 bg-danger/50 sm:w-24 md:w-32" aria-hidden="true"></div>
-                            <p class="tv-desk shrink-0 font-bold uppercase tracking-wide text-primary">
-                                {{ $currentCall['desk_name'] }}
-                            </p>
+                            <p
+                                class="tv-desk shrink-0 font-bold uppercase tracking-wide text-primary"
+                                x-text="visibleDeskName() || {{ \Illuminate\Support\Js::from($currentCall['desk_name']) }}"
+                            >{{ $currentCall['desk_name'] }}</p>
                             @if ($showTicketType)
-                                <p class="shrink-0 text-[0.7rem] font-medium leading-snug text-text-muted sm:text-sm md:text-base">
-                                    {{ $currentCall['ticket_type_name'] }}
-                                </p>
+                                <p
+                                    class="shrink-0 text-[0.7rem] font-medium leading-snug text-text-muted sm:text-sm md:text-base"
+                                    x-text="visibleTicketTypeName() || {{ \Illuminate\Support\Js::from($currentCall['ticket_type_name']) }}"
+                                >{{ $currentCall['ticket_type_name'] }}</p>
                             @endif
                         @else
-                            <p class="tv-code w-full font-bold text-primary/30">—</p>
-                            <div class="h-0.5 w-16 shrink-0 bg-border sm:w-24" aria-hidden="true"></div>
-                            <p class="text-sm font-semibold uppercase tracking-wide text-text-muted sm:text-lg md:text-xl">Aguardando chamada</p>
+                            <div x-show="! visibleDisplayCode()" class="flex w-full flex-col items-center justify-center gap-1.5">
+                                <p class="tv-code w-full font-bold text-primary/30">—</p>
+                                <div class="h-0.5 w-16 shrink-0 bg-border sm:w-24" aria-hidden="true"></div>
+                                <p class="text-sm font-semibold uppercase tracking-wide text-text-muted sm:text-lg md:text-xl">Aguardando chamada</p>
+                            </div>
+                            <div x-cloak x-show="visibleDisplayCode()" class="flex w-full flex-col items-center justify-center gap-1.5 sm:gap-2.5 md:gap-3">
+                                <p class="tv-code tv-code-pulse w-full shrink-0 font-bold tracking-tight text-danger" x-text="visibleDisplayCode()"></p>
+                                <div class="h-0.5 w-16 shrink-0 bg-danger/50 sm:w-24 md:w-32" aria-hidden="true"></div>
+                                <p class="tv-desk shrink-0 font-bold uppercase tracking-wide text-primary" x-text="visibleDeskName()"></p>
+                                @if ($showTicketType)
+                                    <p class="shrink-0 text-[0.7rem] font-medium leading-snug text-text-muted sm:text-sm md:text-base" x-text="visibleTicketTypeName()"></p>
+                                @endif
+                            </div>
                         @endif
                     </div>
                 </section>
@@ -344,7 +369,7 @@
         }
 
         const storageKey = (token) => 'tvCallAudioUnlocked:' + token;
-        const DEFAULT_EFFECT_URL = '/sond/EfeitoSonoroTV.mp3';
+        const DEFAULT_EFFECT_URL = '/sond/efeitoSonoroNovo.mp3';
         // Watchdogs: a media element that does not fire ended/error must not stall the call queue.
         const LOAD_TIMEOUT_MS = 10000;
         const MAX_CLIP_MS = 30000;
@@ -645,6 +670,29 @@
                 list.forEach((item) => this.announce(item));
             },
 
+            /**
+             * Drop queued announcements for a ticket that left CALLED
+             * (start service / complete / no-show). The clip already playing
+             * finishes; other tickets in the queue stay.
+             */
+            invalidateTicket(token, ticketId) {
+                const panel = this.panels[token];
+                const id = ticketId != null ? Number(ticketId) : null;
+                if (!panel || id === null || Number.isNaN(id) || id <= 0) {
+                    return;
+                }
+
+                const before = (panel.queue || []).length;
+                panel.queue = (panel.queue || []).filter((item) => {
+                    const itemTicket = item && item.ticketId != null ? Number(item.ticketId) : null;
+                    return itemTicket !== id;
+                });
+                const removed = before - panel.queue.length;
+                if (removed > 0) {
+                    this.log('queued announcements invalidated for ticket', { ticketId: id, removed: removed });
+                }
+            },
+
             announce(payload) {
                 if (!payload || typeof payload !== 'object') {
                     return;
@@ -654,7 +702,11 @@
                 const callId = payload.callId != null ? Number(payload.callId) : null;
                 const panel = this.panels[token] || this.ensure(token);
 
-                this.log('call received', { callId: callId, displayCode: payload.displayCode || '' });
+                this.log('call received', {
+                    callId: callId,
+                    correlation: payload.correlation || null,
+                    displayCode: payload.displayCode || '',
+                });
 
                 if (!panel || !panel.soundEnabled) {
                     this.warn('announce skipped — sound not enabled');
@@ -1280,11 +1332,25 @@
 
     function tvAudioUi(options = {}) {
         const token = options.panelToken || '';
+        const watchUrl = typeof options.watchUrl === 'string' ? options.watchUrl : '';
+        const fastWatchEnabled = options.fastWatchEnabled === true;
+        const fastWatchIntervalMs = Math.max(250, Number(options.fastWatchIntervalMs) || 400);
 
         return {
             soundEnabled: false,
             isFullscreen: false,
             panelToken: token,
+            fastHighlight: false,
+            fastCursor: Number(options.serverCursor) || 0,
+            serverDisplayCode: options.serverDisplayCode || '',
+            serverDeskName: options.serverDeskName || '',
+            serverTicketTypeName: options.serverTicketTypeName || '',
+            fastDisplayCode: '',
+            fastDeskName: '',
+            fastTicketTypeName: '',
+            _watchTimer: null,
+            _watchInFlight: false,
+            _refreshInFlight: false,
             init() {
                 if (window.__humanaTvCallAudio) {
                     window.__humanaTvCallAudio.ensure(token, options);
@@ -1298,6 +1364,125 @@
                         this.soundEnabled = false;
                     }
                 });
+                this.$watch('$wire.currentCall', (value) => {
+                    const call = value && typeof value === 'object' ? value : null;
+                    this.serverDisplayCode = call && call.display_code ? String(call.display_code) : '';
+                    this.serverDeskName = call && call.desk_name ? String(call.desk_name) : '';
+                    this.serverTicketTypeName = call && call.ticket_type_name ? String(call.ticket_type_name) : '';
+                    const serverCursor = call && call.id != null ? Number(call.id) : 0;
+                    if (serverCursor >= this.fastCursor) {
+                        this.fastCursor = serverCursor;
+                        this.fastDisplayCode = '';
+                        this.fastDeskName = '';
+                        this.fastTicketTypeName = '';
+                        this.fastHighlight = false;
+                    }
+                    if (call && call.ticket_id && call.ticket_status && call.ticket_status !== 'called') {
+                        if (window.__humanaTvCallAudio) {
+                            window.__humanaTvCallAudio.invalidateTicket(token, call.ticket_id);
+                        }
+                    }
+                });
+                if (fastWatchEnabled && watchUrl) {
+                    this.startFastWatch(watchUrl, fastWatchIntervalMs);
+                }
+            },
+            destroy() {
+                if (this._watchTimer) {
+                    clearInterval(this._watchTimer);
+                    this._watchTimer = null;
+                }
+            },
+            visibleDisplayCode() {
+                return this.fastDisplayCode || this.serverDisplayCode || '';
+            },
+            visibleDeskName() {
+                return this.fastDeskName || this.serverDeskName || '';
+            },
+            visibleTicketTypeName() {
+                return this.fastTicketTypeName || this.serverTicketTypeName || '';
+            },
+            startFastWatch(url, intervalMs) {
+                const tick = () => this.pollWatch(url);
+                tick();
+                this._watchTimer = setInterval(tick, intervalMs);
+            },
+            async pollWatch(url) {
+                if (this._watchInFlight || document.hidden) {
+                    return;
+                }
+                this._watchInFlight = true;
+                const controller = (typeof AbortController !== 'undefined')
+                    ? new AbortController()
+                    : null;
+                // Slow networks must not pile requests or leave the in-flight flag stuck.
+                const timeoutMs = Math.max(1000, Number(options.fastWatchTimeoutMs) || 3000);
+                const timer = controller
+                    ? setTimeout(() => {
+                        try {
+                            controller.abort();
+                        } catch (e) {}
+                    }, timeoutMs)
+                    : null;
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined,
+                    });
+                    if (!response.ok) {
+                        // 429 / 5xx: skip this tick; Livewire wire:poll remains the recovery path.
+                        return;
+                    }
+                    const data = await response.json();
+                    this.applyWatchSnapshot(data);
+                } catch (e) {
+                    // Abort, blips, or offline — do not stall; Livewire poll keeps working.
+                } finally {
+                    if (timer) {
+                        clearTimeout(timer);
+                    }
+                    this._watchInFlight = false;
+                }
+            },
+            applyWatchSnapshot(data) {
+                if (!data || data.enabled === false) {
+                    return;
+                }
+                const cursor = data.cursor != null ? Number(data.cursor) : 0;
+                const ticketId = data.ticket_id != null ? Number(data.ticket_id) : null;
+                const status = typeof data.ticket_status === 'string' ? data.ticket_status : null;
+
+                if (status && status !== 'called' && ticketId) {
+                    if (window.__humanaTvCallAudio) {
+                        window.__humanaTvCallAudio.invalidateTicket(token, ticketId);
+                    }
+                }
+
+                if (cursor > this.fastCursor) {
+                    this.fastCursor = cursor;
+                    this.fastDisplayCode = data.display_code ? String(data.display_code) : '';
+                    this.fastDeskName = data.desk_name ? String(data.desk_name) : '';
+                    this.fastTicketTypeName = data.ticket_type_name ? String(data.ticket_type_name) : '';
+                    this.fastHighlight = Boolean(this.fastDisplayCode);
+                    this.requestFeedRefresh();
+                }
+            },
+            requestFeedRefresh() {
+                if (this._refreshInFlight || ! this.$wire || typeof this.$wire.refreshFeed !== 'function') {
+                    return;
+                }
+                this._refreshInFlight = true;
+                Promise.resolve(this.$wire.refreshFeed())
+                    .catch(() => {})
+                    .finally(() => {
+                        this._refreshInFlight = false;
+                    });
             },
             async enableSound() {
                 if (!window.__humanaTvCallAudio) {

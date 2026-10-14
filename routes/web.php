@@ -23,15 +23,22 @@ use App\Http\Controllers\TicketIssueController;
 use App\Http\Controllers\TicketTypeController;
 use App\Http\Controllers\TvPanelController;
 use App\Http\Controllers\TvTtsController;
+use App\Http\Controllers\TvWatchController;
 use App\Http\Controllers\UnitTicketTypeController;
 use App\Http\Controllers\UserController;
 use App\Support\PublicAccessCode;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 Route::redirect('/', '/login');
 
-Route::get('/sond/EfeitoSonoroTV.mp3', function () {
-    $path = public_path('sond/EfeitoSonoroTV.mp3');
+Route::get('/sond/efeitoSonoroNovo.mp3', function () {
+    $path = public_path('sond/efeitoSonoroNovo.mp3');
     abort_unless(is_file($path), 404);
 
     return response()->file($path, [
@@ -51,6 +58,19 @@ Route::get('/painel/{publicToken}', TvPanelController::class)
     ->where('publicToken', PublicAccessCode::panelRoutePattern())
     ->middleware('throttle:tv-page')
     ->name('tv.panel');
+
+Route::get('/painel/{publicToken}/watch', TvWatchController::class)
+    ->where('publicToken', PublicAccessCode::panelRoutePattern())
+    ->middleware('throttle:tv-watch')
+    ->withoutMiddleware([
+        EncryptCookies::class,
+        AddQueuedCookiesToResponse::class,
+        StartSession::class,
+        ShareErrorsFromSession::class,
+        ValidateCsrfToken::class,
+        PreventRequestForgery::class,
+    ])
+    ->name('tv.watch');
 
 Route::get('/painel/{publicToken}/tts/{ticketCall}', TvTtsController::class)
     ->where('publicToken', PublicAccessCode::panelRoutePattern())
