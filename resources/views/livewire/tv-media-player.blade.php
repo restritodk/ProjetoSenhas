@@ -999,9 +999,25 @@
                     }
                 });
             },
+            startMuteWatchdog() {
+                this.stopMuteWatchdog();
+                this._muteWatchdog = setInterval(() => {
+                    if (! this.callAudioActive) {
+                        return;
+                    }
+                    this.enforceConfiguredMute();
+                }, 250);
+            },
+            stopMuteWatchdog() {
+                if (this._muteWatchdog) {
+                    clearInterval(this._muteWatchdog);
+                    this._muteWatchdog = null;
+                }
+            },
             init() {
                 // Temporary mute-duck during call effect only — no pause/remount/playlist advance.
                 // Restore uses play_with_audio === true (SEM ÁUDIO stays muted; COM ÁUDIO may unmute).
+                // Call audio elements are independent — do not touch media video.src here.
                 this._onCallBegin = () => {
                     this.callAudioActive = true;
                     this.clearInterruptionTimer();
@@ -1009,9 +1025,11 @@
                     this.callDucked = true;
                     this.applyMediaAudio();
                     this.enforceConfiguredMute();
+                    this.startMuteWatchdog();
                 };
                 this._onCallEnd = () => {
                     this.callAudioActive = false;
+                    this.stopMuteWatchdog();
                     this.debugLog('call end', this.playbackSnapshot());
                     this.restoreMediaAudioAfterCall();
                     this.continueAfterInterruption();
@@ -1021,6 +1039,7 @@
                 this.$nextTick(() => this.activateCurrent());
             },
             destroy() {
+                this.stopMuteWatchdog();
                 if (this._onCallBegin) {
                     window.removeEventListener('tv-call-audio-begin', this._onCallBegin);
                 }

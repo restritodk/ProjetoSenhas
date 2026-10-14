@@ -39,6 +39,8 @@ class AttendantPanel extends Component
 
     public bool $actionBusy = false;
 
+    public ?int $recallLockedUntil = null;
+
     public bool $showTransferModal = false;
 
     public bool $showNoShowModal = false;
@@ -159,6 +161,14 @@ class AttendantPanel extends Component
             return;
         }
 
+        $cooldown = max(1, (int) config('tv_realtime.recall_cooldown_seconds', 3));
+        if ($this->recallLockedUntil !== null && now()->getTimestamp() < $this->recallLockedUntil) {
+            $this->errorMessage = 'Aguarde alguns segundos antes de rechamar novamente.';
+            $this->statusMessage = '';
+
+            return;
+        }
+
         $ticket = $this->currentTicket;
         abort_if($ticket === null, 404);
         $this->authorize('recall', $ticket);
@@ -167,11 +177,15 @@ class AttendantPanel extends Component
 
         try {
             $recallTicket->handle(auth()->user(), $ticket);
+            $this->recallLockedUntil = now()->addSeconds($cooldown)->getTimestamp();
             $this->statusMessage = 'Senha '.$ticket->display_code.' rechamada.';
             $this->errorMessage = '';
         } catch (ValidationException $exception) {
             $this->errorMessage = collect($exception->errors())->flatten()->first() ?? 'Não foi possível rechamar.';
             $this->statusMessage = '';
+            if (str_contains($this->errorMessage, 'Aguarde alguns segundos')) {
+                $this->recallLockedUntil = now()->addSeconds($cooldown)->getTimestamp();
+            }
         } finally {
             $this->actionBusy = false;
         }

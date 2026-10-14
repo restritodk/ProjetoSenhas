@@ -21,7 +21,9 @@ class TvMediaPlayer extends Component
     public function mount(string $publicToken, DisplayPanelFeed $feed, DisplayPanelPlaylist $playlist, string $clinicName = ''): void
     {
         $this->publicToken = $publicToken;
-        $this->clinicName = $clinicName;
+        // Resolve clinic label once on mount. Parent TvDisplay must NOT pass a live
+        // clinic-name binding — prop updates remount this player and restart media.
+        $this->clinicName = $clinicName !== '' ? $clinicName : $this->resolveClinicName($feed);
         $this->syncPlaylist($feed, $playlist);
     }
 
@@ -60,5 +62,19 @@ class TvMediaPlayer extends Component
             $this->playlistSignature = $signature;
             $this->dispatch('tv-playlist-updated', items: $items);
         }
+    }
+
+    private function resolveClinicName(DisplayPanelFeed $feed): string
+    {
+        $panel = $feed->findByPublicToken($this->publicToken);
+        if ($panel === null) {
+            return (string) config('app.name');
+        }
+
+        $payload = $feed->build($panel);
+
+        $name = trim((string) ($payload['clinic_name'] ?? ''));
+
+        return $name !== '' ? $name : (string) config('app.name');
     }
 }

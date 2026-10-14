@@ -283,11 +283,17 @@
                     @if ($canRecall)
                         <button
                             type="button"
-                            wire:click="recall"
                             wire:loading.attr="disabled"
                             wire:target="recall,startService,callNext,complete"
-                            @disabled($current === null || $current->status !== \App\TicketStatus::CALLED)
+                            @disabled($current === null || $current->status !== \App\TicketStatus::CALLED || ($recallLockedUntil !== null && now()->getTimestamp() < $recallLockedUntil))
                             class="inline-flex min-h-14 cursor-pointer items-center justify-center rounded-2xl bg-warning px-5 text-base font-semibold text-white transition duration-200 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            x-data="{ locked: false }"
+                            x-on:click.prevent="
+                                if (locked || $el.disabled) { return }
+                                locked = true
+                                $wire.recall().finally(() => {})
+                                setTimeout(() => { locked = false }, {{ max(1, (int) config('tv_realtime.recall_cooldown_seconds', 3)) * 1000 }})
+                            "
                         >
                             <span wire:loading.remove wire:target="recall">Rechamar</span>
                             <span wire:loading wire:target="recall">Rechamando...</span>

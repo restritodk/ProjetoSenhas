@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\OperationalContext;
 use App\TicketCallType;
 use App\TicketStatus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
@@ -32,44 +33,56 @@ class RecallTicket
             ]);
         }
 
-        return DB::transaction(function () use ($actor, $ticket, $desk, $unit): Ticket {
-            $locked = Ticket::query()->whereKey($ticket->id)->lockForUpdate()->firstOrFail();
+        $lock = Cache::lock('ticket-recall:'.$ticket->id, 8);
 
-            if (
-                $locked->clinic_id !== $actor->clinic_id
-                || $locked->unit_id !== $unit->id
-                || (int) $locked->current_desk_id !== (int) $desk->id
-                || $locked->status !== TicketStatus::CALLED
-            ) {
-                throw ValidationException::withMessages([
-                    'ticket' => 'Somente a senha chamada nesta mesa pode ser rechamada.',
-                ]);
-            }
+        if (! $lock->get()) {
+            throw ValidationException::withMessages([
+                'ticket' => 'Aguarde alguns segundos antes de rechamar novamente.',
+            ]);
+        }
 
-            $this->assertRecallCooldown($locked);
+        try {
+            return DB::transaction(function () use ($actor, $ticket, $desk, $unit): Ticket {
+                $locked = Ticket::query()->whereKey($ticket->id)->lockForUpdate()->firstOrFail();
 
-            $calledAt = now(config('app.timezone'));
+                if (
+                    $locked->clinic_id !== $actor->clinic_id
+                    || $locked->unit_id !== $unit->id
+                    || (int) $locked->current_desk_id !== (int) $desk->id
+                    || $locked->status !== TicketStatus::CALLED
+                ) {
+                    throw ValidationException::withMessages([
+                        'ticket' => 'Somente a senha chamada nesta mesa pode ser rechamada.',
+                    ]);
+                }
 
-            $locked->forceFill([
-                'called_at' => $calledAt,
-            ])->save();
+                $this->assertRecallCooldown($locked);
 
-            $call = new TicketCall;
-            $call->forceFill([
-                'clinic_id' => $actor->clinic_id,
-                'unit_id' => $unit->id,
-                'sector_id' => $locked->sector_id ?? $desk->sector_id,
-                'ticket_id' => $locked->id,
-                'desk_id' => $desk->id,
-                'called_by_user_id' => $actor->id,
-                'call_type' => TicketCallType::RECALL,
-                'called_at' => $calledAt,
-            ])->save();
+                $calledAt = now(config('app.timezone'));
 
-            $this->announcementAudio->schedule($call);
+                $locked->forceFill([
+                    'called_at' => $calledAt,
+                ])->save();
 
-            return $locked->refresh()->load(['ticketType', 'currentDesk']);
-        });
+                $call = new TicketCall;
+                $call->forceFill([
+                    'clinic_id' => $actor->clinic_id,
+                    'unit_id' => $unit->id,
+                    'sector_id' => $locked->sector_id ?? $desk->sector_id,
+                    'ticket_id' => $locked->id,
+                    'desk_id' => $desk->id,
+                    'called_by_user_id' => $actor->id,
+                    'call_type' => TicketCallType::RECALL,
+                    'called_at' => $calledAt,
+                ])->save();
+
+                $this->announcementAudio->schedule($call);
+
+                return $locked->refresh()->load(['ticketType', 'currentDesk']);
+            });
+        } finally {
+            $lock->release();
+        }
     }
 
     /**

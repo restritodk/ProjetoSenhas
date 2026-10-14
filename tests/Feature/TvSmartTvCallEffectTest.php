@@ -47,7 +47,7 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('preload="auto"', $html);
         $this->assertStringContainsString('isSmartTvBrowser', $html);
-        $this->assertStringContainsString('smart-tv effect selected', $html);
+        $this->assertStringContainsString('call effect selected', $html);
         $this->assertTrue(
             str_contains($html, '"isSmartTv":true')
             || str_contains($html, '\u0022isSmartTv\u0022:true')
@@ -55,7 +55,8 @@ class TvSmartTvCallEffectTest extends TestCase
             'Smart TV flag must be true in the audio UI bootstrap payload'
         );
         // Smart TV plays the ding, then the server audio. It must not call speechSynthesis.
-        $this->assertStringContainsString('Never speechSynthesis on this branch', $html);
+        $this->assertStringContainsString('Skip speechSynthesis on this branch', $html);
+        $this->assertStringContainsString('playSmartTvEffect', $html);
         $this->assertStringContainsString('playNext', $html);
     }
 
@@ -79,7 +80,7 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('playChime', $html);
         $this->assertStringContainsString('SpeechSynthesisUtterance', $html);
         // Desktop keeps the preload element but announce must not select the Smart TV branch.
-        $this->assertStringContainsString('smart-tv effect selected', $html);
+        $this->assertStringContainsString('call effect selected', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('Do not call audio.load() here', $html);
     }

@@ -85,8 +85,20 @@ class TvMediaCallIndependenceTest extends TestCase
 
         $this->assertStringContainsString('tvMediaPlayer', $html);
         $this->assertStringContainsString('__humanaTvCallAudio', $html);
+        $this->assertStringContainsString('__humanaTvWatch', $html);
+        $this->assertStringContainsString('data-tv-media-shell', $html);
         $this->assertStringContainsString('type=island|name=tv-media', $html);
         $this->assertStringContainsString('ENDFRAGMENT:type=island|name=tv-media', $html);
+        // Parent must not bind a live clinic-name prop (remounts the player).
+        $this->assertStringNotContainsString('clinic-name=', $html);
+        $this->assertStringNotContainsString(':clinic-name', $html);
+        // Fullscreen targets the stable shell, not a media remount.
+        $this->assertStringContainsString('tv-shell-root', $html);
+        $this->assertStringContainsString('getElementById(\'tv-shell-root\')', $html);
+        // Call effect MP3 is used on every platform (not Smart-TV-only).
+        $this->assertStringContainsString('call effect selected', $html);
+        $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
+        $this->assertStringContainsString('startMuteWatchdog', $html);
     }
 
     public function test_ticket_call_and_recall_update_call_ui_without_playlist_event(): void
@@ -149,6 +161,11 @@ class TvMediaCallIndependenceTest extends TestCase
             ->assertSee('Guichê 01')
             ->assertDispatched('tv-new-call');
 
+        $afterCallHtml = $tv->html();
+        $this->assertStringContainsString('data-tv-media-shell', $afterCallHtml);
+        $this->assertStringContainsString('wire:ignore', $afterCallHtml);
+        $this->assertStringNotContainsString(':clinic-name', $afterCallHtml);
+
         $media->call('refreshPlaylist')
             ->assertSet('playlistSignature', $signature)
             ->assertSet('items', $items)
@@ -164,6 +181,24 @@ class TvMediaCallIndependenceTest extends TestCase
             ->assertSet('playlistSignature', $signature)
             ->assertSet('items', $items)
             ->assertNotDispatched('tv-playlist-updated');
+    }
+
+    public function test_media_player_does_not_accept_live_clinic_name_prop_from_parent(): void
+    {
+        $panel = $this->panelWithPlaylist();
+
+        $media = Livewire::test(TvMediaPlayer::class, [
+            'publicToken' => $panel->public_token,
+        ]);
+
+        $this->assertNotSame('', $media->get('clinicName'));
+
+        $html = Livewire::test(TvDisplay::class, [
+            'publicToken' => $panel->public_token,
+        ])->html();
+
+        $this->assertStringNotContainsString('clinic-name="', $html);
+        $this->assertMatchesRegularExpression('/wire:ignore[^>]*data-tv-media-shell|data-tv-media-shell[^>]*wire:ignore/', $html);
     }
 
     public function test_playlist_poll_skips_render_when_signature_unchanged(): void

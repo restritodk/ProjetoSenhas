@@ -236,12 +236,16 @@ class TvRealtimeCallTest extends TestCase
         app(ClaimDesk::class)->handle($attendant, $desk);
         app(CallNextTicket::class)->handle($attendant);
 
-        Livewire::actingAs($attendant)
+        $component = Livewire::actingAs($attendant)
             ->test(AttendantPanel::class)
             ->call('recall')
             ->assertSet('errorMessage', '')
-            ->assertSee('rechamada', false)
-            ->call('recall')
+            ->assertSee('rechamada', false);
+
+        $this->assertNotNull($component->get('recallLockedUntil'));
+        $this->assertGreaterThan(now()->getTimestamp(), (int) $component->get('recallLockedUntil'));
+
+        $component->call('recall')
             ->assertSet('errorMessage', 'Aguarde alguns segundos antes de rechamar novamente.');
     }
 
@@ -356,15 +360,17 @@ class TvRealtimeCallTest extends TestCase
 
         $html = Livewire::test(TvDisplay::class, ['publicToken' => $panel->public_token])->html();
 
-        $this->assertStringContainsString('_watchInFlight', $html);
+        $this->assertStringContainsString('__humanaTvWatch', $html);
         $this->assertStringContainsString('_refreshInFlight', $html);
         $this->assertStringContainsString('AbortController', $html);
         $this->assertStringContainsString('controller.abort', $html);
         $this->assertStringContainsString('wire:poll.', $html);
         $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('playSmartTvEffect', $html);
+        $this->assertStringContainsString('call effect selected', $html);
         $this->assertStringContainsString('invalidateTicket', $html);
         $this->assertStringContainsString('itemTicket !== id', $html);
+        $this->assertStringContainsString('data-tv-media-shell', $html);
     }
 
     public function test_rate_limit_headroom_covers_400ms_interval(): void

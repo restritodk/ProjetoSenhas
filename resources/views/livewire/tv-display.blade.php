@@ -38,6 +38,7 @@
     );
 @endphp
 <div
+    id="tv-shell-root"
     wire:poll.{{ $livewirePollMs }}ms="refreshFeed"
     class="tv-shell flex flex-col overflow-hidden"
     style="--color-primary: {{ $primaryColor }}; --color-accent: {{ $accentColor }}; --color-primary-dark: {{ $primaryColor }}; --color-primary-light: {{ $primaryColor }};"
@@ -57,6 +58,8 @@
         'serverDeskName' => (string) ($currentCall['desk_name'] ?? ''),
         'serverTicketTypeName' => (string) ($currentCall['ticket_type_name'] ?? ''),
     ]))"
+    x-on:tv-watch-snapshot.window="onWatchSnapshot(\$event.detail)"
+    x-on:tv-watch-refresh.window="if (\$event.detail && \$event.detail.panelToken === panelToken) { requestFeedRefresh() }"
 >
     {{-- Stable audio host (wire:ignore). Audio is visually hidden but NOT display:none —
         some Smart TV browsers refuse to play media inside display:none. --}}
@@ -218,15 +221,19 @@
                 lg:grid-cols-[minmax(0,1.9fr)_minmax(20rem,1fr)]
                 xl:grid-cols-[minmax(0,2fr)_minmax(22rem,1fr)]"
         >
-            {{-- MEDIA: @island skips morph on TicketCall polls so Alpine/video/YouTube keep playing.
+            {{-- MEDIA: wire:ignore + @island keep the player DOM/Alpine alive across
+                 TicketCall morphs, watch-triggered refreshFeed, and highlight toggles.
                  Playlist updates stay on the nested TvMediaPlayer poll + window event.
-                 Call effect must not remount the player or unmute SEM ÁUDIO media. --}}
-            <section class="relative min-h-0 overflow-hidden rounded-xl border-2 border-primary bg-primary shadow-sm max-md:order-3 sm:rounded-2xl sm:border-[3px] md:order-none">
+                 Do NOT bind live props from TvDisplay (clinic-name etc.) — that remounts media. --}}
+            <section
+                wire:ignore
+                class="relative min-h-0 overflow-hidden rounded-xl border-2 border-primary bg-primary shadow-sm max-md:order-3 sm:rounded-2xl sm:border-[3px] md:order-none"
+                data-tv-media-shell
+            >
                 @island(name: 'tv-media')
                     <livewire:tv-media-player
                         wire:key="tv-media-{{ $publicToken }}"
                         :public-token="$publicToken"
-                        :clinic-name="$clinicName"
                     />
                 @endisland
             </section>
@@ -847,7 +854,7 @@
 
                     if (audioUrl) {
                         const onVoiceError = () => {
-                            // Smart TV: MP3 effect, then server audio. Never speechSynthesis on this branch.
+                            // Smart TV: MP3 effect, then server audio. Skip speechSynthesis on this branch.
                             if (panel.isSmartTv || this.isSmartTvBrowser()) {
                                 finish();
                                 return;
@@ -866,19 +873,19 @@
                     this.speak(panel, announcement, finish, null);
                 };
 
-                // Smart TV: MP3 effect, then server audio. Never speechSynthesis on this branch.
+                // Call effect MP3 (efeitoSonoroNovo) for every platform, then TTS.
+                // Smart TV: do not fall through to speechSynthesis in playVoice.
                 if (panel.isSmartTv || this.isSmartTvBrowser()) {
                     panel.isSmartTv = true;
-                    this.log('smart-tv effect selected');
+                }
+
+                if (panel.clinicChimeEnabled) {
+                    this.log('call effect selected', panel.effectUrl || DEFAULT_EFFECT_URL);
                     this.playSmartTvEffect(panel, playVoice);
                     return;
                 }
 
-                if (panel.clinicChimeEnabled) {
-                    this.playChime(panel).then(playVoice).catch(playVoice);
-                } else {
-                    playVoice();
-                }
+                playVoice();
             },
 
             playSmartTvEffect(panel, onEnd) {
@@ -1330,11 +1337,131 @@
         };
     })();
 
+    /**
+     * Fast-watch singleton — survives Livewire morphs of the TvDisplay root.
+     * Alpine remounts must NOT create duplicate timers (that caused media restarts).
+     */
+    (function () {
+        if (window.__humanaTvWatch) {
+            return;
+        }
+
+        window.__humanaTvWatch = {
+            panels: Object.create(null),
+
+            start(options = {}) {
+                const token = options.panelToken || '';
+                const url = typeof options.watchUrl === 'string' ? options.watchUrl : '';
+                if (! token || ! url || options.fastWatchEnabled !== true) {
+                    return;
+                }
+
+                const existing = this.panels[token];
+                if (existing && existing.timer) {
+                    existing.cursor = Math.max(existing.cursor || 0, Number(options.serverCursor) || 0);
+                    existing.url = url;
+                    return;
+                }
+
+                const state = {
+                    token: token,
+                    url: url,
+                    cursor: Number(options.serverCursor) || 0,
+                    intervalMs: Math.max(250, Number(options.fastWatchIntervalMs) || 400),
+                    timeoutMs: Math.max(1000, Number(options.fastWatchTimeoutMs) || 3000),
+                    inFlight: false,
+                    refreshInFlight: false,
+                    timer: null,
+                };
+                this.panels[token] = state;
+
+                const tick = () => this.poll(token);
+                tick();
+                state.timer = setInterval(tick, state.intervalMs);
+            },
+
+            async poll(token) {
+                const state = this.panels[token];
+                if (! state || state.inFlight || document.hidden) {
+                    return;
+                }
+                state.inFlight = true;
+                const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                const timer = controller
+                    ? setTimeout(() => { try { controller.abort(); } catch (e) {} }, state.timeoutMs)
+                    : null;
+                try {
+                    const response = await fetch(state.url, {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined,
+                    });
+                    if (! response.ok) {
+                        return;
+                    }
+                    const data = await response.json();
+                    this.apply(token, data);
+                } catch (e) {
+                    // Abort/offline — Livewire wire:poll remains recovery.
+                } finally {
+                    if (timer) {
+                        clearTimeout(timer);
+                    }
+                    state.inFlight = false;
+                }
+            },
+
+            apply(token, data) {
+                const state = this.panels[token];
+                if (! state || ! data || data.enabled === false) {
+                    return;
+                }
+
+                const cursor = data.cursor != null ? Number(data.cursor) : 0;
+                const ticketId = data.ticket_id != null ? Number(data.ticket_id) : null;
+                const status = typeof data.ticket_status === 'string' ? data.ticket_status : null;
+
+                if (status && status !== 'called' && ticketId && window.__humanaTvCallAudio) {
+                    window.__humanaTvCallAudio.invalidateTicket(token, ticketId);
+                }
+
+                window.dispatchEvent(new CustomEvent('tv-watch-snapshot', {
+                    detail: {
+                        panelToken: token,
+                        cursor: cursor,
+                        data: data,
+                        isNew: cursor > state.cursor,
+                    },
+                }));
+
+                if (cursor > state.cursor) {
+                    state.cursor = cursor;
+                    window.dispatchEvent(new CustomEvent('tv-watch-refresh', {
+                        detail: { panelToken: token },
+                    }));
+                }
+            },
+
+            syncCursor(token, cursor) {
+                const state = this.panels[token];
+                if (! state) {
+                    return;
+                }
+                const next = Number(cursor) || 0;
+                if (next >= state.cursor) {
+                    state.cursor = next;
+                }
+            },
+        };
+    })();
+
     function tvAudioUi(options = {}) {
         const token = options.panelToken || '';
-        const watchUrl = typeof options.watchUrl === 'string' ? options.watchUrl : '';
-        const fastWatchEnabled = options.fastWatchEnabled === true;
-        const fastWatchIntervalMs = Math.max(250, Number(options.fastWatchIntervalMs) || 400);
 
         return {
             soundEnabled: false,
@@ -1348,9 +1475,8 @@
             fastDisplayCode: '',
             fastDeskName: '',
             fastTicketTypeName: '',
-            _watchTimer: null,
-            _watchInFlight: false,
             _refreshInFlight: false,
+            _watchInFlight: false,
             init() {
                 if (window.__humanaTvCallAudio) {
                     window.__humanaTvCallAudio.ensure(token, options);
@@ -1377,21 +1503,29 @@
                         this.fastTicketTypeName = '';
                         this.fastHighlight = false;
                     }
+                    if (window.__humanaTvWatch) {
+                        window.__humanaTvWatch.syncCursor(token, serverCursor);
+                    }
                     if (call && call.ticket_id && call.ticket_status && call.ticket_status !== 'called') {
                         if (window.__humanaTvCallAudio) {
                             window.__humanaTvCallAudio.invalidateTicket(token, call.ticket_id);
                         }
                     }
                 });
-                if (fastWatchEnabled && watchUrl) {
-                    this.startFastWatch(watchUrl, fastWatchIntervalMs);
+                if (window.__humanaTvWatch) {
+                    window.__humanaTvWatch.start(options);
                 }
             },
-            destroy() {
-                if (this._watchTimer) {
-                    clearInterval(this._watchTimer);
-                    this._watchTimer = null;
+            onWatchSnapshot(detail) {
+                if (! detail || detail.panelToken !== token || ! detail.isNew || ! detail.data) {
+                    return;
                 }
+                const data = detail.data;
+                this.fastCursor = detail.cursor;
+                this.fastDisplayCode = data.display_code ? String(data.display_code) : '';
+                this.fastDeskName = data.desk_name ? String(data.desk_name) : '';
+                this.fastTicketTypeName = data.ticket_type_name ? String(data.ticket_type_name) : '';
+                this.fastHighlight = Boolean(this.fastDisplayCode);
             },
             visibleDisplayCode() {
                 return this.fastDisplayCode || this.serverDisplayCode || '';
@@ -1401,77 +1535,6 @@
             },
             visibleTicketTypeName() {
                 return this.fastTicketTypeName || this.serverTicketTypeName || '';
-            },
-            startFastWatch(url, intervalMs) {
-                const tick = () => this.pollWatch(url);
-                tick();
-                this._watchTimer = setInterval(tick, intervalMs);
-            },
-            async pollWatch(url) {
-                if (this._watchInFlight || document.hidden) {
-                    return;
-                }
-                this._watchInFlight = true;
-                const controller = (typeof AbortController !== 'undefined')
-                    ? new AbortController()
-                    : null;
-                // Slow networks must not pile requests or leave the in-flight flag stuck.
-                const timeoutMs = Math.max(1000, Number(options.fastWatchTimeoutMs) || 3000);
-                const timer = controller
-                    ? setTimeout(() => {
-                        try {
-                            controller.abort();
-                        } catch (e) {}
-                    }, timeoutMs)
-                    : null;
-                try {
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'same-origin',
-                        headers: {
-                            'Accept': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
-                        },
-                        cache: 'no-store',
-                        signal: controller ? controller.signal : undefined,
-                    });
-                    if (!response.ok) {
-                        // 429 / 5xx: skip this tick; Livewire wire:poll remains the recovery path.
-                        return;
-                    }
-                    const data = await response.json();
-                    this.applyWatchSnapshot(data);
-                } catch (e) {
-                    // Abort, blips, or offline — do not stall; Livewire poll keeps working.
-                } finally {
-                    if (timer) {
-                        clearTimeout(timer);
-                    }
-                    this._watchInFlight = false;
-                }
-            },
-            applyWatchSnapshot(data) {
-                if (!data || data.enabled === false) {
-                    return;
-                }
-                const cursor = data.cursor != null ? Number(data.cursor) : 0;
-                const ticketId = data.ticket_id != null ? Number(data.ticket_id) : null;
-                const status = typeof data.ticket_status === 'string' ? data.ticket_status : null;
-
-                if (status && status !== 'called' && ticketId) {
-                    if (window.__humanaTvCallAudio) {
-                        window.__humanaTvCallAudio.invalidateTicket(token, ticketId);
-                    }
-                }
-
-                if (cursor > this.fastCursor) {
-                    this.fastCursor = cursor;
-                    this.fastDisplayCode = data.display_code ? String(data.display_code) : '';
-                    this.fastDeskName = data.desk_name ? String(data.desk_name) : '';
-                    this.fastTicketTypeName = data.ticket_type_name ? String(data.ticket_type_name) : '';
-                    this.fastHighlight = Boolean(this.fastDisplayCode);
-                    this.requestFeedRefresh();
-                }
             },
             requestFeedRefresh() {
                 if (this._refreshInFlight || ! this.$wire || typeof this.$wire.refreshFeed !== 'function') {
@@ -1488,15 +1551,14 @@
                 if (!window.__humanaTvCallAudio) {
                     return;
                 }
-                // Set UI state before awaiting audio unlock so a Livewire morph mid-await
-                // cannot leave the button stuck on "Ativar som" while the host is enabled.
                 this.soundEnabled = true;
                 await window.__humanaTvCallAudio.enable(token, options);
                 this.soundEnabled = window.__humanaTvCallAudio.isEnabled(token);
             },
             toggleFullscreen() {
-                const root = document.documentElement;
-                if (!document.fullscreenElement) {
+                // Stable shell container — do not remount media / change video src.
+                const root = document.getElementById('tv-shell-root') || document.documentElement;
+                if (! document.fullscreenElement) {
                     if (root.requestFullscreen) {
                         root.requestFullscreen().catch(() => {});
                     }

@@ -30,6 +30,12 @@ class TvPanelTest extends TestCase
     public function test_valid_token_opens_panel_and_invalid_token_is_not_found(): void
     {
         $panel = $this->panel();
+        $staffEmail = 'staff-leak-check-'.uniqid('', true).'@example.test';
+        User::factory()->create([
+            'clinic_id' => $panel->clinic_id,
+            'role' => UserRole::ATTENDANT,
+            'email' => $staffEmail,
+        ]);
 
         $this->get(route('tv.panel', ['publicToken' => $panel->public_token]))
             ->assertOk()
@@ -38,7 +44,7 @@ class TvPanelTest extends TestCase
             ->assertSee('Últimas chamadas')
             ->assertSee('Aguardando chamada')
             ->assertDontSee('Informações')
-            ->assertDontSee($panel->clinic->users()->first()?->email ?? 'never');
+            ->assertDontSee($staffEmail);
 
         $this->get(route('tv.panel', ['publicToken' => str_repeat('a', 64)]))->assertNotFound();
         $this->get('/painel/1')->assertNotFound();
