@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>TV Media Isolation Harness</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 1rem; background: #0b1220; color: #e8eef8; }
+    video, canvas { width: 480px; max-width: 100%; background: #000; }
+    pre { background: #111827; padding: 1rem; overflow: auto; white-space: pre-wrap; }
+    button { margin: 0.25rem 0.25rem 0.25rem 0; padding: 0.5rem 0.75rem; }
+    .ok { color: #4ade80; } .bad { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>Harness — isolamento mídia × anúncio</h1>
+  <p>Simula o defeito real: tocar efeito sonoro enquanto o vídeo reproduz e medir currentTime.</p>
+  <canvas id="c" width="640" height="360" hidden></canvas>
+  <video id="v" playsinline muted autoplay></video>
+  <audio id="effect" src="/sond/efeitoSonoroNovo.mp3" preload="auto"></audio>
+  <div>
+    <button id="unlock">1) Ativar som (gesto)</button>
+    <button id="run">2) Rodar prova chamada</button>
+    <button id="runOld">3) Simular bug antigo (bloquear resume)</button>
+  </div>
+  <pre id="log"></pre>
+<script>
+(() => {
+  const logEl = document.getElementById('log');
+  const video = document.getElementById('v');
+  const effect = document.getElementById('effect');
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let frame = 0;
+  let soundOk = false;
+  const lines = [];
+  const log = (m, cls) => {
+    const stamp = new Date().toISOString().slice(11, 23);
+    lines.push((cls ? '[' + cls + '] ' : '') + stamp + ' ' + m);
+    logEl.textContent = lines.join('\\n');
+    console.info('[Harness]', m);
+  };
+
+  // Persistent canvas stream — same element identity throughout.
+  const draw = () => {
+    frame += 1;
+    ctx.fillStyle = '#123';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect((frame * 3) % canvas.width, 120, 80, 80);
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px sans-serif';
+    ctx.fillText('t=' + (performance.now() / 1000).toFixed(2) + 's', 24, 48);
+    requestAnimationFrame(draw);
+  };
+  draw();
+  video.srcObject = canvas.captureStream(30);
+  video.muted = true;
+  video.play().catch((e) => log('video play rejected: ' + e.message, 'bad'));
+
+  const snapshot = () => ({
+    currentTime: video.currentTime,
+    paused: video.paused,
+    muted: video.muted,
+    readyState: video.readyState,
+    seq: video.__seq || 1,
+  });
+  video.__seq = 1;
+
+  document.getElementById('unlock').onclick = async () => {
+    try {
+      effect.muted = false;
+      effect.volume = 1;
+      await effect.play();
+      effect.pause();
+      effect.currentTime = 0;
+      soundOk = true;
+      log('EFFECT unlocked via gesture', 'ok');
+    } catch (e) {
+      soundOk = false;
+      log('EFFECT unlock failed: ' + e.message, 'bad');
+    }
+  };
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function playEffectThenResume(blockResume) {
+    if (!soundOk) {
+      log('Pressione Ativar som primeiro', 'bad');
+      return;
+    }
+    const before = snapshot();
+    log('BEFORE_CALL ' + JSON.stringify(before));
+    await wait(1200);
+    const mid = snapshot();
+    log('MID_BEFORE_EFFECT ' + JSON.stringify(mid));
+
+    let callAudioActive = true;
+    const onPause = () => {
+      log('VIDEO_PAUSE_EXTERNAL paused=' + video.paused + ' t=' + video.currentTime.toFixed(3));
+      if (blockResume && callAudioActive) {
+        log('OLD_BUG: resume blocked while callAudioActive', 'bad');
+        return;
+      }
+      setTimeout(() => {
+        if (video.paused && !video.ended) {
+          video.play().then(() => log('VIDEO_CONTINUE ok t=' + video.currentTime.toFixed(3), 'ok'))
+            .catch((e) => log('VIDEO_CONTINUE rejected: ' + e.message, 'bad'));
+        }
+      }, 400);
+    };
+    video.addEventListener('pause', onPause);
+
+    log('EFFECT_START_REQUESTED');
+    try {
+      effect.currentTime = 0;
+      const p = effect.play();
+      await p;
+      log('EFFECT_PLAY_RESOLVED');
+      await new Promise((resolve) => {
+        effect.onended = () => { log('EFFECT_ENDED'); resolve(); };
+        setTimeout(resolve, 8000);
+      });
+    } catch (e) {
+      log('AUDIO_PLAY_REJECTED ' + e.message, 'bad');
+    }
+
+    callAudioActive = false;
+    if (video.paused) {
+      try {
+        await video.play();
+        log('POST_CALL resume forced', 'ok');
+      } catch (e) {
+        log('POST_CALL resume failed: ' + e.message, 'bad');
+      }
+    }
+    await wait(1500);
+    const after = snapshot();
+    log('AFTER_CALL ' + JSON.stringify(after));
+    video.removeEventListener('pause', onPause);
+
+    // canvas streams often keep currentTime at 0 — use frame motion marker via paused flag + play state.
+    const advanced = !after.paused && after.readyState >= 2 && video.srcObject;
+    const sameElement = after.seq === before.seq;
+    if (advanced && sameElement) {
+      log('PASS: video keeps playing on same element during/after effect', 'ok');
+      document.title = 'PASS';
+    } else {
+      log('FAIL: video did not keep playing cleanly', 'bad');
+      document.title = 'FAIL';
+    }
+  }
+
+  document.getElementById('run').onclick = () => playEffectThenResume(false);
+  document.getElementById('runOld').onclick = () => playEffectThenResume(true);
+})();
+</script>
+</body>
+</html>

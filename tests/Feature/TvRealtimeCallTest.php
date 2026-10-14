@@ -367,7 +367,9 @@ class TvRealtimeCallTest extends TestCase
         $this->assertStringContainsString('wire:poll.', $html);
         $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('playSmartTvEffect', $html);
-        $this->assertStringContainsString('call effect selected', $html);
+        $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
+        $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
+        $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
         $this->assertStringContainsString('invalidateTicket', $html);
         $this->assertStringContainsString('itemTicket !== id', $html);
         $this->assertStringContainsString('data-tv-media-shell', $html);

@@ -41,19 +41,24 @@ class TvMediaCallIndependenceTest extends TestCase
 
         $this->assertStringContainsString('tvMediaPlayer', $html);
         $this->assertStringContainsString('wire:ignore', $html);
-        $this->assertStringContainsString('callDucked', $html);
-        $this->assertStringContainsString('restoreMediaAudioAfterCall', $html);
+        $this->assertStringContainsString('data-tv-media-video', $html);
         $this->assertStringContainsString('enforceConfiguredMute', $html);
         $this->assertStringContainsString('play_with_audio === true', $html);
-        $this->assertStringContainsString('tv-call-audio-begin', $html);
-        $this->assertStringContainsString('tv-call-audio-end', $html);
+        $this->assertStringContainsString('bindVideoSrc', $html);
+        // Absolute isolation: media player must not subscribe to call-audio events.
+        $this->assertStringNotContainsString("addEventListener('tv-call-audio-begin'", $html);
+        $this->assertStringNotContainsString("addEventListener('tv-call-audio-end'", $html);
+        $this->assertStringNotContainsString('callDucked', $html);
+        $this->assertStringNotContainsString('callAudioActive', $html);
+        $this->assertStringNotContainsString('startMuteWatchdog', $html);
+        $this->assertStringNotContainsString('reloadVideoAfterDecoderLoss', $html);
         // Soft-resume remount regression must stay gone.
         $this->assertStringNotContainsString('resumeCurrentPlayback', $html);
         $this->assertStringNotContainsString('scheduleSoftResume', $html);
         $this->assertStringNotContainsString('pauseVideo', $html);
         $this->assertStringNotContainsString('stopVideo', $html);
         $this->assertStringNotContainsString('video.pause(', $html);
-        // External pauses (TV audio focus) continue the same element after the call.
+        // External pauses (browser audio focus) resume the same element — not call-gated.
         $this->assertStringContainsString('onExternalInterruption', $html);
         $this->assertStringContainsString('continueAfterInterruption', $html);
         $this->assertStringNotContainsString('location.reload', $html);
@@ -95,10 +100,14 @@ class TvMediaCallIndependenceTest extends TestCase
         // Fullscreen targets the stable shell, not a media remount.
         $this->assertStringContainsString('tv-shell-root', $html);
         $this->assertStringContainsString('getElementById(\'tv-shell-root\')', $html);
-        // Call effect MP3 is used on every platform (not Smart-TV-only).
-        $this->assertStringContainsString('call effect selected', $html);
+        // Call effect MP3 is used on every platform; unlock is not Smart-TV-only.
+        $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
         $this->assertStringContainsString('efeitoSonoroNovo.mp3', $html);
-        $this->assertStringContainsString('startMuteWatchdog', $html);
+        $this->assertStringContainsString('unlockSmartTvEffect', $html);
+        $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
+        // Call audio hosts live on TvDisplay; media island must stay decoupled.
+        $this->assertStringContainsString('tv-call-audio-begin', $html);
+        $this->assertStringContainsString('data-tv-call-effect', $html);
     }
 
     public function test_ticket_call_and_recall_update_call_ui_without_playlist_event(): void

@@ -22,7 +22,7 @@
     $isSmartTv = \App\Support\SmartTvBrowser::matches(request()->userAgent());
     // Relative URL — absolute asset(APP_URL) breaks when the TV opens the panel by IP/host mismatch.
     $smartTvEffectUrl = '/sond/efeitoSonoroNovo.mp3';
-    $tvAudioDebug = (bool) config('app.debug');
+    $tvAudioDebug = (bool) config('app.debug') || (bool) config('tv_realtime.player_diagnostics', false);
     $fastWatchEnabled = (bool) config('tv_realtime.fast_watch_enabled', true);
     $fastWatchIntervalMs = (int) config('tv_realtime.fast_watch_interval_ms', 400);
     $livewirePollMs = (int) config('tv_realtime.livewire_poll_ms', 3000);
@@ -640,15 +640,18 @@
 
                 if (panel.isSmartTv || this.isSmartTvBrowser()) {
                     panel.isSmartTv = true;
-                    await this.unlockSmartTvEffect(panel);
-                    return true;
                 }
 
-                // Unlock AudioContext inside the user gesture for this tab/panel instance.
-                await this.ensureAudioContext(panel);
+                // Always unlock the HTMLAudioElement used for efeitoSonoroNovo.mp3.
+                // Desktop previously unlocked only AudioContext/WebAudio chime, so later
+                // playSmartTvEffect() was rejected (NotAllowedError) and the ding never played.
+                await this.unlockSmartTvEffect(panel);
 
-                if (panel.clinicChimeEnabled) {
-                    await this.playChime(panel);
+                if (! panel.effectUnlocked) {
+                    await this.ensureAudioContext(panel);
+                    if (panel.clinicChimeEnabled) {
+                        await this.playChime(panel);
+                    }
                 }
 
                 return true;
@@ -709,14 +712,14 @@
                 const callId = payload.callId != null ? Number(payload.callId) : null;
                 const panel = this.panels[token] || this.ensure(token);
 
-                this.log('call received', {
+                this.log('CALL_RECEIVED', {
                     callId: callId,
                     correlation: payload.correlation || null,
                     displayCode: payload.displayCode || '',
                 });
 
                 if (!panel || !panel.soundEnabled) {
-                    this.warn('announce skipped — sound not enabled');
+                    this.warn('announce skipped — sound not enabled (press Ativar som)');
                     return;
                 }
 
@@ -880,7 +883,7 @@
                 }
 
                 if (panel.clinicChimeEnabled) {
-                    this.log('call effect selected', panel.effectUrl || DEFAULT_EFFECT_URL);
+                    this.log('EFFECT_START_REQUESTED', panel.effectUrl || DEFAULT_EFFECT_URL);
                     this.playSmartTvEffect(panel, playVoice);
                     return;
                 }
@@ -926,7 +929,7 @@
                         audio.onerror = null;
                     } catch (e) {}
                     if (reason === 'timeout') {
-                        this.warn('effect watchdog — stopping effect');
+                        this.warn('EFFECT_ENDED', 'timeout');
                         try {
                             audio.pause();
                         } catch (e) {}
@@ -934,11 +937,11 @@
                         return;
                     }
                     if (reason === 'error') {
-                        this.warn('effect error — falling back to chime');
+                        this.warn('AUDIO_ERROR', 'effect — falling back to chime');
                         this.playChime(panel).finally(safeEnd);
                         return;
                     }
-                    this.log('effect ended');
+                    this.log('EFFECT_ENDED', reason || 'ended');
                     safeEnd();
                 };
 
@@ -973,14 +976,15 @@
                                 audio.currentTime = 0;
                             }
                         } catch (e) {}
-                        this.log('effect playing');
+                        this.log('EFFECT_PLAY_RESOLVED', 'play() invoked');
                         const playPromise = audio.play();
                         if (playPromise && typeof playPromise.then === 'function') {
                             playPromise.then(() => {
                                 panel.effectUnlocked = true;
+                                this.log('EFFECT_PLAY_RESOLVED', 'playing');
                                 armClipWatchdog();
                             }).catch((err) => {
-                                this.warn('effect play rejected', err && err.message ? err.message : err);
+                                this.warn('AUDIO_PLAY_REJECTED', err && err.message ? err.message : err);
                                 this.markAudioBlocked(panel, err);
                                 done('error');
                             });
@@ -1110,6 +1114,8 @@
              * Smart TV unlock on the effect player is left untouched.
              */
             playServerAudio(panel, url, onEnd, onError) {
+                this.log('TTS_START_REQUESTED', url || null);
+
                 const fail = () => {
                     if (typeof onError === 'function') {
                         onError();
@@ -1161,13 +1167,13 @@
                     } catch (e) {}
                     panel.speaking = false;
                     if (ok) {
-                        this.log('voice ended');
+                        this.log('TTS_ENDED');
                         if (typeof onEnd === 'function') {
                             onEnd();
                         }
                         return;
                     }
-                    this.warn('voice failed', reason || 'error');
+                    this.warn('AUDIO_ERROR', reason || 'voice-failed');
                     try {
                         audio.pause();
                     } catch (e) {}
@@ -1182,7 +1188,7 @@
                     const limit = isFinite(duration) && duration > 0
                         ? Math.min(MAX_CLIP_MS, duration * 1000 + 2000)
                         : MAX_CLIP_MS;
-                    this.log('voice playing', { duration: isFinite(duration) ? duration : null });
+                    this.log('TTS_PLAYING', { duration: isFinite(duration) ? duration : null });
                     timer = setTimeout(() => done(true), limit);
                 };
                 timer = setTimeout(() => done(false, 'load-timeout'), LOAD_TIMEOUT_MS);

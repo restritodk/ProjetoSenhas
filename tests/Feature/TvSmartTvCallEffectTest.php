@@ -47,7 +47,7 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('data-tv-call-effect', $html);
         $this->assertStringContainsString('preload="auto"', $html);
         $this->assertStringContainsString('isSmartTvBrowser', $html);
-        $this->assertStringContainsString('call effect selected', $html);
+        $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
         $this->assertTrue(
             str_contains($html, '"isSmartTv":true')
             || str_contains($html, '\u0022isSmartTv\u0022:true')
@@ -79,8 +79,9 @@ class TvSmartTvCallEffectTest extends TestCase
         $this->assertStringContainsString('speechSynthesis', $html);
         $this->assertStringContainsString('playChime', $html);
         $this->assertStringContainsString('SpeechSynthesisUtterance', $html);
-        // Desktop keeps the preload element but announce must not select the Smart TV branch.
-        $this->assertStringContainsString('call effect selected', $html);
+        // Desktop unlocks the same HTMLAudioElement and plays efeitoSonoroNovo before TTS.
+        $this->assertStringContainsString('EFFECT_START_REQUESTED', $html);
+        $this->assertStringContainsString('Always unlock the HTMLAudioElement', $html);
         $this->assertStringContainsString('/sond/efeitoSonoroNovo.mp3', $html);
         $this->assertStringContainsString('Do not call audio.load() here', $html);
     }

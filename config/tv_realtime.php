@@ -40,4 +40,17 @@ return [
 
     'recall_cooldown_seconds' => max(1, (int) env('TV_RECALL_COOLDOWN_SECONDS', 3)),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Player / call-audio diagnostics (browser console)
+    |--------------------------------------------------------------------------
+    |
+    | When true, the TV panel logs playback identity, currentTime, pause/play
+    | reasons, and call-audio stage tags (CALL_RECEIVED, EFFECT_*, TTS_*).
+    | No secrets are logged. Prefer enabling temporarily on a single TV.
+    |
+    */
+
+    'player_diagnostics' => (bool) env('TV_PLAYER_DIAGNOSTICS', false),
+
 ];
